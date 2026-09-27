@@ -15,7 +15,7 @@ use Drupal\Core\Logger\LoggerChannelInterface;
 use Drupal\Core\Session\AccountInterface;
 
 /**
- * Service managing claim access grants and permissions.
+ * Service managing claim access grants and permissions across all content entities.
  */
 final class ClaimAccessManager implements ClaimAccessManagerInterface {
 
@@ -29,6 +29,26 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
     LoggerChannelFactoryInterface $loggerFactory,
   ) {
     $this->logger = $loggerFactory->get('claim_access_rights');
+  }
+
+  /**
+   * Checks whether a specific entity type and bundle is enabled for claiming.
+   */
+  public function isEntityTypeBundleEnabled(string $entity_type, string $bundle): bool {
+    $config = $this->configFactory->get('claim_access_rights.settings');
+    $enabled_types = (array) $config->get('enabled_entity_types');
+
+    if (!empty($enabled_types)) {
+      return !empty($enabled_types[$entity_type]) && in_array($bundle, (array) $enabled_types[$entity_type], TRUE);
+    }
+
+    // Fallback backward compatibility for legacy enabled_bundles (node-only).
+    if ($entity_type === 'node') {
+      $node_bundles = (array) $config->get('enabled_bundles') ?: ['listing'];
+      return in_array($bundle, $node_bundles, TRUE);
+    }
+
+    return FALSE;
   }
 
   /**
@@ -189,7 +209,7 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       '@rights' => $rights_str,
     ]);
 
-    // Invalidate entity cache and claims cache tag.
+    // Invalidate entity cache and claims cache tags.
     $this->cacheTagsInvalidator->invalidateTags([
       $entity_type . ':' . $entity_id,
       'claim_access_grants',
@@ -206,10 +226,8 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       return FALSE;
     }
 
-    // Check if the entity bundle is enabled for claiming.
-    $config = $this->configFactory->get('claim_access_rights.settings');
-    $enabled_bundles = (array) $config->get('enabled_bundles') ?: ['listing'];
-    if (!in_array($entity->bundle(), $enabled_bundles, TRUE)) {
+    // Check if the entity type and bundle is enabled for claiming.
+    if (!$this->isEntityTypeBundleEnabled($entity->getEntityTypeId(), $entity->bundle())) {
       return FALSE;
     }
 
@@ -258,27 +276,28 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
    * {@inheritdoc}
    */
   public function isClaimable(EntityInterface $entity, ?AccountInterface $account = null): array {
-    $config = $this->configFactory->get('claim_access_rights.settings');
-    $enabled_bundles = (array) $config->get('enabled_bundles') ?: ['listing'];
+    $entity_type = $entity->getEntityTypeId();
+    $bundle = $entity->bundle();
 
-    if (!in_array($entity->bundle(), $enabled_bundles, TRUE)) {
+    if (!$this->isEntityTypeBundleEnabled($entity_type, $bundle)) {
       return [
         'claimable' => FALSE,
-        'reason' => 'Claiming is not enabled for this content type.',
-        'mode' => (string) $config->get('claim_mode') ?: self::MODE_EXCLUSIVE,
+        'reason' => sprintf('Claiming is not enabled for %s (%s).', $entity_type, $bundle),
+        'mode' => self::MODE_EXCLUSIVE,
         'active_grants' => [],
       ];
     }
 
+    $config = $this->configFactory->get('claim_access_rights.settings');
     $mode = (string) $config->get('claim_mode') ?: self::MODE_EXCLUSIVE;
-    $active_grants = $this->getActiveGrants($entity->getEntityTypeId(), (int) $entity->id());
+    $active_grants = $this->getActiveGrants($entity_type, (int) $entity->id());
 
     if ($account && !$account->isAnonymous()) {
       foreach ($active_grants as $grant) {
         if ((int) $grant['uid'] === (int) $account->id()) {
           return [
             'claimable' => FALSE,
-            'reason' => 'You already hold an active access grant for this listing.',
+            'reason' => 'You already hold an active access grant for this item.',
             'mode' => $mode,
             'active_grants' => $active_grants,
             'user_is_claimant' => TRUE,
@@ -292,7 +311,7 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
     if ($mode === self::MODE_EXCLUSIVE && !empty($active_grants)) {
       return [
         'claimable' => FALSE,
-        'reason' => 'This listing has already been claimed and exclusive access is active. New requests are currently disabled.',
+        'reason' => 'This item has already been claimed and exclusive access is active. New requests are currently disabled.',
         'mode' => $mode,
         'active_grants' => $active_grants,
       ];
@@ -300,7 +319,7 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
 
     return [
       'claimable' => TRUE,
-      'reason' => 'This listing is available to claim.',
+      'reason' => 'This item is available to claim.',
       'mode' => $mode,
       'active_grants' => $active_grants,
     ];
@@ -390,6 +409,117 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
     ]);
 
     return TRUE;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function extendGrant(int $grant_id, int $additional_days = 30): bool {
+    $grant = $this->getGrant($grant_id);
+    if (!$grant) {
+      return FALSE;
+    }
+
+    $now = $this->time->getRequestTime();
+    $current_expiry = (int) $grant['expires_at'];
+    $base_time = ($current_expiry > $now) ? $current_expiry : $now;
+    $new_expiry = $base_time + ($additional_days * 86400);
+
+    $this->database->update('claim_access_grants')
+      ->fields([
+        'expires_at' => $new_expiry,
+        'status' => self::STATUS_ACTIVE,
+      ])
+      ->condition('id', $grant_id)
+      ->execute();
+
+    $this->cacheTagsInvalidator->invalidateTags([
+      $grant['entity_type'] . ':' . $grant['entity_id'],
+      'claim_access_grants',
+    ]);
+
+    $this->logger->notice('Extended grant @id by @days days to @expiry.', [
+      '@id' => $grant_id,
+      '@days' => $additional_days,
+      '@expiry' => date('Y-m-d H:i:s', $new_expiry),
+    ]);
+
+    return TRUE;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function deleteGrant(int $grant_id): bool {
+    $grant = $this->getGrant($grant_id);
+    if (!$grant) {
+      return FALSE;
+    }
+
+    $this->database->delete('claim_access_grants')
+      ->condition('id', $grant_id)
+      ->execute();
+
+    $this->cacheTagsInvalidator->invalidateTags([
+      $grant['entity_type'] . ':' . $grant['entity_id'],
+      'claim_access_grants',
+    ]);
+
+    return TRUE;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function getStatistics(): array {
+    $now = $this->time->getRequestTime();
+    $seven_days_later = $now + (7 * 86400);
+
+    $grants = $this->database->select('claim_access_grants', 'c')
+      ->fields('c')
+      ->execute()
+      ->fetchAll(\PDO::FETCH_ASSOC);
+
+    $stats = [
+      'total' => count($grants),
+      'active' => 0,
+      'expiring_soon' => 0,
+      'expired' => 0,
+      'replaced' => 0,
+      'revoked' => 0,
+      'by_entity_type' => [],
+    ];
+
+    foreach ($grants as $g) {
+      $type = $g['entity_type'];
+      $stats['by_entity_type'][$type] = ($stats['by_entity_type'][$type] ?? 0) + 1;
+
+      $status = $g['status'];
+      $expires_at = (int) $g['expires_at'];
+
+      if ($status === self::STATUS_ACTIVE) {
+        if ($expires_at > 0 && $expires_at <= $now) {
+          $stats['expired']++;
+        }
+        else {
+          $stats['active']++;
+          if ($expires_at > $now && $expires_at <= $seven_days_later) {
+            $stats['expiring_soon']++;
+          }
+        }
+      }
+      elseif ($status === self::STATUS_EXPIRED) {
+        $stats['expired']++;
+      }
+      elseif ($status === self::STATUS_REPLACED) {
+        $stats['replaced']++;
+      }
+      elseif ($status === self::STATUS_REVOKED) {
+        $stats['revoked']++;
+      }
+    }
+
+    return $stats;
   }
 
   /**

@@ -1,0 +1,31 @@
+langcode: en
+status: true
+dependencies:
+  config:
+    - webform.webform.claim_listing
+  module:
+    - claim_access_rights
+    - eca_content
+id: claim_access_auto_approval
+modeller: bpmn_io
+label: 'Claim Access Automated Approval'
+version: 1.0.0
+weight: 0
+events:
+  Event_claim_submission_insert:
+    plugin: 'content_entity:insert'
+    label: 'Claim Submission Inserted'
+    configuration:
+      type: 'webform_submission claim_listing'
+    successors:
+      -
+        id: Activity_auto_approve_claim
+        condition: ''
+conditions: {  }
+gateways: {  }
+actions:
+  Activity_auto_approve_claim:
+    plugin: claim_access_rights_grant
+    label: 'Auto Grant Claim Access Rights'
+    configuration: {  }
+    successors: {  }

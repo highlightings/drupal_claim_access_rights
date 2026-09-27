@@ -8,7 +8,7 @@ use Drupal\Core\Entity\EntityInterface;
 use Drupal\Core\Session\AccountInterface;
 
 /**
- * Interface for managing entity claim access rights and grants.
+ * Interface for managing entity claim access rights and grants across all content entities.
  */
 interface ClaimAccessManagerInterface {
 
@@ -29,7 +29,7 @@ interface ClaimAccessManagerInterface {
    * Grants access rights on an entity to a user.
    *
    * @param string $entity_type
-   *   The entity type ID.
+   *   The entity type ID (e.g. node, block_content, media, taxonomy_term).
    * @param int $entity_id
    *   The entity ID.
    * @param int $uid
@@ -63,7 +63,7 @@ interface ClaimAccessManagerInterface {
    * Checks if an account has access to perform an operation on an entity via claim grant.
    *
    * @param \Drupal\Core\Entity\EntityInterface $entity
-   *   The entity.
+   *   The entity (node, block_content, media, taxonomy_term, etc.).
    * @param \Drupal\Core\Session\AccountInterface $account
    *   The user account.
    * @param string $op
@@ -130,6 +130,32 @@ interface ClaimAccessManagerInterface {
    *   TRUE if revoked, FALSE otherwise.
    */
   public function revokeGrant(int $grant_id): bool;
+
+  /**
+   * Extends the expiry of an existing grant.
+   *
+   * @param int $grant_id
+   *   The grant ID.
+   * @param int $additional_days
+   *   Number of days to extend.
+   *
+   * @return bool
+   *   TRUE on success, FALSE otherwise.
+   */
+  public function extendGrant(int $grant_id, int $additional_days = 30): bool;
+
+  /**
+   * Deletes a grant permanently from the registry.
+   */
+  public function deleteGrant(int $grant_id): bool;
+
+  /**
+   * Returns aggregate statistics for sitewide claims dashboard.
+   *
+   * @return array
+   *   Keys: total, active, expiring_soon, expired, replaced, revoked, by_entity_type.
+   */
+  public function getStatistics(): array;
 
   /**
    * Purges / marks expired grants.

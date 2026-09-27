@@ -1,8 +1,5 @@
-enabled_entity_types:
-  node:
-    - listing
-  block_content:
-    - basic
+enabled_bundles:
+  - listing
 claim_mode: exclusive
 allowed_rights:
   - view

@@ -2,9 +2,16 @@ claim_access_rights.settings:
   type: config_object
   label: 'Claim Access Rights settings'
   mapping:
+    enabled_entity_types:
+      type: sequence
+      label: 'Enabled Entity Types and Bundles'
+      sequence:
+        type: sequence
+        sequence:
+          type: string
     enabled_bundles:
       type: sequence
-      label: 'Enabled Content Types'
+      label: 'Enabled Content Types (Legacy)'
       sequence:
         type: string
     claim_mode:

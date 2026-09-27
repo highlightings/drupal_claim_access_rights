@@ -10,7 +10,7 @@ claim_access_rights.claims_list:
   path: '/admin/content/claims'
   defaults:
     _controller: '\Drupal\claim_access_rights\Controller\ClaimsAdminController::listClaims'
-    _title: 'Access Claims & Grants'
+    _title: 'Sitewide Access Claims Dashboard'
   requirements:
     _permission: 'administer claim access rights'
 
@@ -19,5 +19,21 @@ claim_access_rights.revoke_grant:
   defaults:
     _form: '\Drupal\claim_access_rights\Form\ClaimGrantRevokeForm'
     _title: 'Revoke Claim Access Grant'
+  requirements:
+    _permission: 'administer claim access rights'
+
+claim_access_rights.extend_grant:
+  path: '/admin/content/claims/{grant_id}/extend'
+  defaults:
+    _form: '\Drupal\claim_access_rights\Form\ClaimGrantExtendForm'
+    _title: 'Extend Claim Access Grant'
+  requirements:
+    _permission: 'administer claim access rights'
+
+claim_access_rights.delete_grant:
+  path: '/admin/content/claims/{grant_id}/delete'
+  defaults:
+    _form: '\Drupal\claim_access_rights\Form\ClaimGrantDeleteForm'
+    _title: 'Delete Claim Access Grant'
   requirements:
     _permission: 'administer claim access rights'

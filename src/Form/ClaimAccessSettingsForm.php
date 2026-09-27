@@ -5,18 +5,20 @@ declare(strict_types=1);
 namespace Drupal\claim_access_rights\Form;
 
 use Drupal\claim_access_rights\ClaimAccessManagerInterface;
+use Drupal\Core\Entity\EntityTypeBundleInfoInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Form\ConfigFormBase;
 use Drupal\Core\Form\FormStateInterface;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 
 /**
- * Configure settings for Claim Access Rights.
+ * Configure settings for Claim Access Rights across all content entity types.
  */
 final class ClaimAccessSettingsForm extends ConfigFormBase {
 
   public function __construct(
     private readonly EntityTypeManagerInterface $entityTypeManager,
+    private readonly EntityTypeBundleInfoInterface $bundleInfo,
   ) {}
 
   /**
@@ -25,6 +27,7 @@ final class ClaimAccessSettingsForm extends ConfigFormBase {
   public static function create(ContainerInterface $container): self {
     $instance = new self(
       $container->get('entity_type.manager'),
+      $container->get('entity_type.bundle.info'),
     );
     $instance->setConfigFactory($container->get('config.factory'));
     return $instance;
@@ -49,20 +52,50 @@ final class ClaimAccessSettingsForm extends ConfigFormBase {
    */
   public function buildForm(array $form, FormStateInterface $form_state): array {
     $config = $this->config('claim_access_rights.settings');
+    $enabled_entity_types = (array) $config->get('enabled_entity_types');
 
-    $node_types = $this->entityTypeManager->getStorage('node_type')->loadMultiple();
-    $bundle_options = [];
-    foreach ($node_types as $bundle => $type) {
-      $bundle_options[$bundle] = $type->label();
-    }
-
-    $form['enabled_bundles'] = [
-      '#type' => 'checkboxes',
-      '#title' => $this->t('Enabled Content Types for Claiming'),
-      '#description' => $this->t('Select which content types can be claimed by users.'),
-      '#options' => $bundle_options,
-      '#default_value' => (array) $config->get('enabled_bundles') ?: ['listing'],
+    $form['entity_types_container'] = [
+      '#type' => 'details',
+      '#title' => $this->t('Claimable Content Entity Types & Bundles'),
+      '#description' => $this->t('Select which entity types (Nodes, Blocks, Media, Taxonomy) can be claimed by users.'),
+      '#open' => TRUE,
     ];
+
+    $supported_entity_types = [
+      'node' => $this->t('Content Types (Nodes)'),
+      'block_content' => $this->t('Custom Content Blocks (Banners, Promo Tiles, Spotlights)'),
+      'media' => $this->t('Media (Images, Videos, Documents)'),
+      'taxonomy_term' => $this->t('Taxonomy Terms (Categories, Vocabularies)'),
+    ];
+
+    foreach ($supported_entity_types as $type_id => $type_label) {
+      if (!$this->entityTypeManager->hasDefinition($type_id)) {
+        continue;
+      }
+
+      $bundles = $this->bundleInfo->getBundleInfo($type_id);
+      $bundle_options = [];
+      foreach ($bundles as $b_id => $b_info) {
+        $bundle_options[$b_id] = $b_info['label'] ?? $b_id;
+      }
+
+      if (empty($bundle_options)) {
+        continue;
+      }
+
+      $defaults = $enabled_entity_types[$type_id] ?? [];
+      // Backward compatibility for node legacy config.
+      if (empty($defaults) && $type_id === 'node') {
+        $defaults = (array) $config->get('enabled_bundles') ?: ['listing'];
+      }
+
+      $form['entity_types_container'][$type_id] = [
+        '#type' => 'checkboxes',
+        '#title' => $type_label,
+        '#options' => $bundle_options,
+        '#default_value' => (array) $defaults,
+      ];
+    }
 
     $form['claim_mode'] = [
       '#type' => 'radios',
@@ -81,8 +114,8 @@ final class ClaimAccessSettingsForm extends ConfigFormBase {
       '#title' => $this->t('Claimable Rights'),
       '#description' => $this->t('Select the rights that can be claimed by users.'),
       '#options' => [
-        ClaimAccessManagerInterface::RIGHT_VIEW => $this->t('View access — View the node content'),
-        ClaimAccessManagerInterface::RIGHT_EDIT => $this->t('Edit access — Edit and update the node'),
+        ClaimAccessManagerInterface::RIGHT_VIEW => $this->t('View access — View the entity content'),
+        ClaimAccessManagerInterface::RIGHT_EDIT => $this->t('Edit access — Edit and update the entity'),
       ],
       '#default_value' => (array) $config->get('allowed_rights') ?: ['view', 'edit'],
     ];
@@ -134,8 +167,22 @@ final class ClaimAccessSettingsForm extends ConfigFormBase {
    * {@inheritdoc}
    */
   public function submitForm(array &$form, FormStateInterface $form_state): void {
+    $supported = ['node', 'block_content', 'media', 'taxonomy_term'];
+    $enabled_entity_types = [];
+
+    foreach ($supported as $type_id) {
+      $val = $form_state->getValue($type_id);
+      if (is_array($val)) {
+        $selected = array_values(array_filter($val));
+        if (!empty($selected)) {
+          $enabled_entity_types[$type_id] = $selected;
+        }
+      }
+    }
+
     $this->config('claim_access_rights.settings')
-      ->set('enabled_bundles', array_values(array_filter($form_state->getValue('enabled_bundles'))))
+      ->set('enabled_entity_types', $enabled_entity_types)
+      ->set('enabled_bundles', $enabled_entity_types['node'] ?? [])
       ->set('claim_mode', (string) $form_state->getValue('claim_mode'))
       ->set('allowed_rights', array_values(array_filter($form_state->getValue('allowed_rights'))))
       ->set('expiry_type', (string) $form_state->getValue('expiry_type'))
