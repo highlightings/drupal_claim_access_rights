@@ -1,0 +1,9 @@
+services:
+  claim_access_rights.manager:
+    class: Drupal\claim_access_rights\ClaimAccessManager
+    arguments:
+      - '@database'
+      - '@config.factory'
+      - '@datetime.time'
+      - '@cache_tags.invalidator'
+      - '@logger.factory'

@@ -1,0 +1,8 @@
+administer claim access rights:
+  title: 'Administer claim access rights'
+  description: 'Manage claim access settings, view all claims, and revoke access grants.'
+  restrict access: true
+
+claim access rights:
+  title: 'Claim access rights on content'
+  description: 'Submit claims to request access (view, edit) on listings and enabled content.'

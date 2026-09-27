@@ -1,0 +1,100 @@
+<?php
+
+/**
+ * @file
+ * Install, update, and uninstall functions for the claim_access_rights module.
+ */
+
+declare(strict_types=1);
+
+/**
+ * Implements hook_schema().
+ */
+function claim_access_rights_schema(): array {
+  $schema['claim_access_grants'] = [
+    'description' => 'Stores entity access rights claimed and granted to users.',
+    'fields' => [
+      'id' => [
+        'description' => 'Primary Key: Unique grant ID.',
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ],
+      'entity_type' => [
+        'description' => 'The entity type (e.g. node).',
+        'type' => 'varchar',
+        'length' => 32,
+        'not null' => TRUE,
+        'default' => 'node',
+      ],
+      'entity_id' => [
+        'description' => 'The ID of the target entity.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ],
+      'uid' => [
+        'description' => 'The {users}.uid of the claimant user.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ],
+      'rights' => [
+        'description' => 'Comma-separated access rights (e.g. view,edit).',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => 'view,edit',
+      ],
+      'mode' => [
+        'description' => 'The claim mode applied: exclusive, replace, or append.',
+        'type' => 'varchar',
+        'length' => 32,
+        'not null' => TRUE,
+        'default' => 'exclusive',
+      ],
+      'status' => [
+        'description' => 'Grant status: active, revoked, expired, replaced, or pending.',
+        'type' => 'varchar',
+        'length' => 32,
+        'not null' => TRUE,
+        'default' => 'active',
+      ],
+      'created' => [
+        'description' => 'Timestamp when the claim access grant was created.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ],
+      'expires_at' => [
+        'description' => 'Timestamp when the grant expires. 0 means never expires.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ],
+      'submission_id' => [
+        'description' => 'Optional webform submission ID associated with this grant.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => FALSE,
+        'default' => 0,
+      ],
+      'notes' => [
+        'description' => 'Optional notes or verification details from the claimant.',
+        'type' => 'text',
+        'size' => 'big',
+        'not null' => FALSE,
+      ],
+    ],
+    'primary key' => ['id'],
+    'indexes' => [
+      'entity_target' => ['entity_type', 'entity_id', 'status'],
+      'user_grants' => ['uid', 'status'],
+      'status_expiry' => ['status', 'expires_at'],
+    ],
+  ];
+
+  return $schema;
+}

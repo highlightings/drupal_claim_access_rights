@@ -1,0 +1,13 @@
+claim_access_rights.settings:
+  title: 'Claim Access Rights'
+  description: 'Configure entity claiming, access rights, modes, and automated approvals.'
+  parent: user.admin_index
+  route_name: claim_access_rights.settings
+  weight: 50
+
+claim_access_rights.claims_list:
+  title: 'Access Claims'
+  description: 'Manage and review listing claim access grants.'
+  parent: system.admin_content
+  route_name: claim_access_rights.claims_list
+  weight: 50

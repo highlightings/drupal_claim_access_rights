@@ -1,0 +1,132 @@
+<?php
+
+/**
+ * @file
+ * Core module logic for Claim Access Rights.
+ */
+
+declare(strict_types=1);
+
+use Drupal\Core\Access\AccessResult;
+use Drupal\Core\Access\AccessResultInterface;
+use Drupal\Core\Entity\Display\EntityViewDisplayInterface;
+use Drupal\Core\Session\AccountInterface;
+use Drupal\Core\Url;
+use Drupal\node\NodeInterface;
+
+/**
+ * Implements hook_node_access().
+ */
+function claim_access_rights_node_access(NodeInterface $node, string $op, AccountInterface $account): AccessResultInterface {
+  /** @var \Drupal\claim_access_rights\ClaimAccessManagerInterface $manager */
+  $manager = \Drupal::service('claim_access_rights.manager');
+
+  if ($manager->hasAccess($node, $account, $op)) {
+    return AccessResult::allowed()
+      ->cachePerUser()
+      ->addCacheableDependency($node);
+  }
+
+  return AccessResult::neutral()
+    ->cachePerUser()
+    ->addCacheableDependency($node);
+}
+
+/**
+ * Implements hook_cron().
+ */
+function claim_access_rights_cron(): void {
+  /** @var \Drupal\claim_access_rights\ClaimAccessManagerInterface $manager */
+  $manager = \Drupal::service('claim_access_rights.manager');
+  $manager->purgeExpiredGrants();
+}
+
+/**
+ * Implements hook_node_view().
+ */
+function claim_access_rights_node_view(array &$build, NodeInterface $node, EntityViewDisplayInterface $display, string $view_mode): void {
+  if ($view_mode !== 'full') {
+    return;
+  }
+
+  $config = \Drupal::config('claim_access_rights.settings');
+  $enabled_bundles = (array) $config->get('enabled_bundles') ?: ['listing'];
+  if (!in_array($node->bundle(), $enabled_bundles, TRUE)) {
+    return;
+  }
+
+  /** @var \Drupal\claim_access_rights\ClaimAccessManagerInterface $manager */
+  $manager = \Drupal::service('claim_access_rights.manager');
+  $current_user = \Drupal::currentUser();
+  $info = $manager->isClaimable($node, $current_user);
+
+  $container = [
+    '#type' => 'container',
+    '#attributes' => [
+      'class' => ['claim-access-listing-box'],
+      'style' => 'margin: 20px 0; padding: 16px; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc;',
+    ],
+    '#weight' => 50,
+  ];
+
+  if (!empty($info['user_is_claimant'])) {
+    $grant = $info['grant'];
+    $expires = (int) $grant['expires_at'] > 0
+      ? \Drupal::service('date.formatter')->format((int) $grant['expires_at'], 'short')
+      : (string) t('Never');
+
+    $html = '<div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">';
+    $html .= '<div>';
+    $html .= '<strong style="color:#166534; font-size:1.05em;">✓ You manage this listing</strong><br>';
+    $html .= '<span style="color:#64748b; font-size:0.9em;">Granted Rights: ' . htmlspecialchars(strtoupper((string) $grant['rights'])) . ' | Expires: ' . htmlspecialchars($expires) . '</span>';
+    $html .= '</div>';
+
+    if (in_array('edit', explode(',', (string) $grant['rights']), TRUE)) {
+      $edit_url = Url::fromRoute('entity.node.edit_form', ['node' => $node->id()])->toString();
+      $html .= '<a href="' . $edit_url . '" class="button button--primary" style="background:#2563eb; color:#fff; padding:8px 16px; border-radius:6px; text-decoration:none; font-weight:600;">Edit Listing</a>';
+    }
+    $html .= '</div>';
+
+    $container['content'] = [
+      '#markup' => $html,
+    ];
+  }
+  elseif ($current_user->isAnonymous()) {
+    $login_url = Url::fromRoute('user.login', [], ['query' => ['destination' => $node->toUrl()->toString()]])->toString();
+    $container['content'] = [
+      '#markup' => sprintf(
+        '<div><strong>Want to manage this %s?</strong> <a href="%s" style="color:#2563eb; font-weight:bold;">Log in to claim access</a>.</div>',
+        htmlspecialchars($node->bundle()),
+        $login_url
+      ),
+    ];
+  }
+  elseif ($info['claimable']) {
+    $claim_url = Url::fromRoute('entity.webform.canonical', ['webform' => 'claim_listing'], [
+      'query' => [
+        'target_entity_id' => $node->id(),
+        'target_entity_title' => $node->label(),
+        'target_entity_type' => 'node',
+      ],
+    ])->toString();
+
+    $html = '<div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">';
+    $html .= '<div>';
+    $html .= '<strong>Is this your listing?</strong><br>';
+    $html .= '<span style="color:#64748b; font-size:0.9em;">Claim view and edit rights to manage details and updates.</span>';
+    $html .= '</div>';
+    $html .= '<a href="' . $claim_url . '" class="button button--primary claim-listing-btn" style="background:#16a34a; color:#fff; padding:8px 18px; border-radius:6px; text-decoration:none; font-weight:bold;">Claim This Listing</a>';
+    $html .= '</div>';
+
+    $container['content'] = [
+      '#markup' => $html,
+    ];
+  }
+  else {
+    $container['content'] = [
+      '#markup' => '<div style="color:#64748b;"><em>' . htmlspecialchars($info['reason']) . '</em></div>',
+    ];
+  }
+
+  $build['claim_access_box'] = $container;
+}

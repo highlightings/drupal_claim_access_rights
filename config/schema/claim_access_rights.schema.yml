@@ -1,0 +1,29 @@
+claim_access_rights.settings:
+  type: config_object
+  label: 'Claim Access Rights settings'
+  mapping:
+    enabled_bundles:
+      type: sequence
+      label: 'Enabled Content Types'
+      sequence:
+        type: string
+    claim_mode:
+      type: string
+      label: 'Default Claim Access Mode (exclusive, replace, append)'
+    allowed_rights:
+      type: sequence
+      label: 'Allowed Claimable Rights'
+      sequence:
+        type: string
+    default_expiry_days:
+      type: integer
+      label: 'Default Expiry in Days'
+    expiry_type:
+      type: string
+      label: 'Expiry type (none, days, date)'
+    auto_approval_mode:
+      type: string
+      label: 'Approval Mode (eca, immediate, manual)'
+    notification_email:
+      type: string
+      label: 'Admin Notification Email'

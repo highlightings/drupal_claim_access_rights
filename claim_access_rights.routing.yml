@@ -1,0 +1,23 @@
+claim_access_rights.settings:
+  path: '/admin/config/people/claim-access-rights'
+  defaults:
+    _form: '\Drupal\claim_access_rights\Form\ClaimAccessSettingsForm'
+    _title: 'Claim Access Rights Settings'
+  requirements:
+    _permission: 'administer claim access rights'
+
+claim_access_rights.claims_list:
+  path: '/admin/content/claims'
+  defaults:
+    _controller: '\Drupal\claim_access_rights\Controller\ClaimsAdminController::listClaims'
+    _title: 'Access Claims & Grants'
+  requirements:
+    _permission: 'administer claim access rights'
+
+claim_access_rights.revoke_grant:
+  path: '/admin/content/claims/{grant_id}/revoke'
+  defaults:
+    _form: '\Drupal\claim_access_rights\Form\ClaimGrantRevokeForm'
+    _title: 'Revoke Claim Access Grant'
+  requirements:
+    _permission: 'administer claim access rights'

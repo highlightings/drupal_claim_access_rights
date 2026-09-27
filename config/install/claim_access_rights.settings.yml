@@ -1,0 +1,10 @@
+enabled_bundles:
+  - listing
+claim_mode: exclusive
+allowed_rights:
+  - view
+  - edit
+default_expiry_days: 30
+expiry_type: days
+auto_approval_mode: eca
+notification_email: ''
