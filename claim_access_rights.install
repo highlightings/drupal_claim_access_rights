@@ -5,7 +5,15 @@
  * Install, update, and uninstall functions for the claim_access_rights module.
  */
 
-declare(strict_types=1);
+use Drupal\user\RoleInterface;
+
+/**
+ * Implements hook_install().
+ */
+function claim_access_rights_install(): void {
+  // Automatically grant the claim access permission to authenticated users.
+  user_role_grant_permissions(RoleInterface::AUTHENTICATED_ID, ['claim access rights']);
+}
 
 /**
  * Implements hook_schema().

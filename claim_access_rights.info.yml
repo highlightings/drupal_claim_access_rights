@@ -7,3 +7,8 @@ dependencies:
   - drupal:node
   - drupal:user
   - webform:webform
+  - webform:webform_ui
+  - eca:eca
+  - eca:eca_content
+  - eca:eca_ui
+  - bpmn_io:bpmn_io
