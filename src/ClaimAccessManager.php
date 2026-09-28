@@ -120,24 +120,44 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
     if (array_diff($rights, $allowed_rights)) {
       throw new \InvalidArgumentException('One or more requested rights are not claimable.');
     }
+
+    // This is a security/business-policy invariant and must not depend on the
+    // Webform or ECA caller performing the validation first.
+    $window_error = $this->validateClaimWindow($starts_at, $expires_at);
+    if ($window_error !== NULL) {
+      throw new \InvalidArgumentException($window_error);
+    }
+
     $rights_str = implode(',', $rights);
 
-    // The check-then-write sequences below must be atomic per entity, or two
-    // simultaneous claims can both pass the exclusivity check.
-    $grant_id = $this->withEntityLock($entity_type, $entity_id, function () use ($entity_type, $entity_id, $uid, $rights_str, $mode, $now, $starts_at, $expires_at, $notes, $submission_id): int {
-      $transaction = $this->database->startTransaction();
-      try {
-        // The user's own active grant (exclusive/append) is refreshed in place.
-        $existing = $mode === self::MODE_REPLACE ? FALSE : $this->database->select('claim_access_grants', 'c')
-          ->fields('c', ['id'])
-          ->condition('entity_type', $entity_type)
-          ->condition('entity_id', $entity_id)
-          ->condition('uid', $uid)
-          ->condition('status', self::STATUS_ACTIVE)
-          ->execute()
-          ->fetchField();
+    // The check-then-write sequences below must be atomic per entity and user.
+    // The user lock is deliberately acquired before the entity lock. All
+    // mutation paths that need both locks must preserve this ordering.
+    $grant_id = $this->withUserLock($uid, function () use ($entity_type, $entity_id, $uid, $rights_str, $mode, $now, $starts_at, $expires_at, $notes, $submission_id): int {
+      return $this->withEntityLock($entity_type, $entity_id, function () use ($entity_type, $entity_id, $uid, $rights_str, $mode, $now, $starts_at, $expires_at, $notes, $submission_id): int {
+        $transaction = $this->database->startTransaction();
+        try {
+          // The user's own active grant (exclusive/append) is refreshed in place.
+          $existing = $mode === self::MODE_REPLACE ? FALSE : $this->database->select('claim_access_grants', 'c')
+            ->fields('c', ['id'])
+            ->condition('entity_type', $entity_type)
+            ->condition('entity_id', $entity_id)
+            ->condition('uid', $uid)
+            ->condition('status', self::STATUS_ACTIVE)
+            ->execute()
+            ->fetchField();
 
-        if ($mode === self::MODE_EXCLUSIVE) {
+          // Only a new active grant consumes one of the user's configured
+          // claim slots. This check is inside the user lock, so two concurrent
+          // requests for different entities cannot both pass the same limit.
+          if (!$existing) {
+            $limit_error = $this->validateUserClaimLimit($uid);
+            if ($limit_error !== NULL) {
+              throw new \InvalidArgumentException($limit_error);
+            }
+          }
+
+          if ($mode === self::MODE_EXCLUSIVE) {
           // Exclude the user's own grant so it cannot mask someone else's
           // overlapping reservation.
           $conflict = $this->getOverlappingExclusiveGrant($entity_type, $entity_id, $starts_at, $expires_at, $existing ? (int) $existing : NULL);
@@ -198,6 +218,7 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       }
       return $grant_id;
     });
+  });
 
     $this->logger->notice('Granted claim access ID @id to UID @uid for @type @eid (Mode: @mode, Rights: @rights).', [
       '@id' => $grant_id,
@@ -977,6 +998,27 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
     if (!$this->lock->acquire($name, 5.0)) {
       throw new \RuntimeException('Could not obtain a lock for this item. Please try again.');
     }
+    try {
+      return $callback();
+    }
+    finally {
+      $this->lock->release($name);
+    }
+  }
+
+  /**
+   * Runs a callback while holding a per-user claim lock.
+   *
+   * Infrastructure Requirement:
+   * Sites operating across multiple web servers or clustered PHP-FPM containers
+   * must configure a shared lock backend to serialize concurrent claims per user.
+   */
+  private function withUserLock(int $uid, callable $callback): mixed {
+    $name = 'claim_access_rights:user:' . $uid;
+    if (!$this->lock->acquire($name, 5.0)) {
+      throw new \RuntimeException('Could not obtain a lock for this user. Please try again.');
+    }
+
     try {
       return $callback();
     }

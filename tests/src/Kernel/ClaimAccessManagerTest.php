@@ -78,6 +78,75 @@ final class ClaimAccessManagerTest extends KernelTestBase {
     $this->assertNull($this->manager->validateClaimWindow($now, $now + 30 * 86400));
   }
 
+  /**
+   * grantAccess() enforces claim-window policy independently of its caller.
+   */
+  public function testGrantAccessEnforcesWindowPolicy(): void {
+    $user = $this->createUser();
+    $now = time();
+
+    // Permanent grants are disabled by the test configuration.
+    $this->expectException(\InvalidArgumentException::class);
+    $this->expectExceptionMessage('Permanent access cannot be requested');
+
+    $this->manager->grantAccess(
+      'node',
+      (int) $this->node->id(),
+      (int) $user->id(),
+      ['view'],
+      'exclusive',
+      0,
+      NULL,
+      NULL,
+      $now
+    );
+  }
+
+  /**
+   * grantAccess() enforces the configured active-claim limit.
+   */
+  public function testGrantAccessEnforcesUserClaimLimit(): void {
+    $this->config('claim_access_rights.settings')
+      ->set('max_active_claims_per_user', 1)
+      ->save();
+
+    $user = $this->createUser();
+    $now = time();
+
+    $this->manager->grantAccess(
+      'node',
+      (int) $this->node->id(),
+      (int) $user->id(),
+      ['view'],
+      'exclusive',
+      $now + 86400,
+      NULL,
+      NULL,
+      $now
+    );
+
+    $node2 = Node::create([
+      'type' => 'listing',
+      'title' => 'Limit Node',
+    ]);
+    $node2->save();
+
+    $this->expectException(\InvalidArgumentException::class);
+    $this->expectExceptionMessage('maximum number of active claims (1)');
+
+    $this->manager->grantAccess(
+      'node',
+      (int) $node2->id(),
+      (int) $user->id(),
+      ['view'],
+      'exclusive',
+      $now + 86400,
+      NULL,
+      NULL,
+      $now
+    );
+  }
+
   public function testExpiredGrantDeniesAccessWithoutWriting(): void {
     $user = $this->createUser();
     $id = $this->manager->grantAccess('node', (int) $this->node->id(), (int) $user->id(), ['view', 'edit'], NULL, time() + 1);
