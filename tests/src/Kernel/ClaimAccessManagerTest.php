@@ -130,7 +130,7 @@ final class ClaimAccessManagerTest extends KernelTestBase {
     $this->manager->grantAccess('node', (int) $this->node->id(), (int) $u3->id(), ['view'], 'exclusive', 0, NULL, NULL, $now + 500);
   }
 
-  public function testRequestExtensionTransitionsToPendingAndPreservesAccessWhileUnexpired(): void {
+  public function testRequestExtensionPreservesActiveStatusAndPendingRenewal(): void {
     $this->config('claim_access_rights.settings')
       ->set('user_extension_auto_approve', FALSE)
       ->save();
@@ -138,28 +138,41 @@ final class ClaimAccessManagerTest extends KernelTestBase {
     $user = $this->createUser(['claim access rights']);
     $id = $this->manager->grantAccess('node', (int) $this->node->id(), (int) $user->id(), ['view', 'edit'], NULL, time() + 86400);
 
-    // Request extension under manual approval mode.
+    // 1. Request extension on an ACTIVE grant.
     $success = $this->manager->requestExtension($id, 30, 'Need more time');
     $this->assertTrue($success);
 
-    // Status is transitioned to pending for review.
+    // An active grant remains STATUS_ACTIVE so access is preserved and queries are not corrupted.
     $grant = $this->manager->getGrant($id);
-    $this->assertSame(ClaimAccessManagerInterface::STATUS_PENDING, $grant['status']);
-
-    // Access is preserved while the existing window is still unexpired.
+    $this->assertSame(ClaimAccessManagerInterface::STATUS_ACTIVE, $grant['status']);
+    $this->assertTrue(ClaimAccessManager::isExtensionPending($grant['notes']));
     $this->assertTrue($this->manager->hasAccess($this->node, $user, 'update'));
 
-    // When the existing window expires, access is denied while still pending.
+    // 2. Request extension on an EXPIRED grant: status transitions to STATUS_PENDING.
+    $user2 = $this->createUser(['claim access rights']);
+    $node2 = Node::create(['type' => 'listing', 'title' => 'Hall Expired']);
+    $node2->save();
+    $id2 = $this->manager->grantAccess('node', (int) $node2->id(), (int) $user2->id(), ['view', 'edit'], NULL, time() + 1);
     $this->container->get('database')->update('claim_access_grants')
-      ->fields(['expires_at' => time() - 60])
-      ->condition('id', $id)
+      ->fields(['expires_at' => time() - 100, 'status' => ClaimAccessManagerInterface::STATUS_EXPIRED])
+      ->condition('id', $id2)
       ->execute();
-    $this->assertFalse($this->manager->hasAccess($this->node, $user, 'update'));
 
-    // Admin approves/extends the grant: status transitions back to active.
+    $this->assertTrue($this->manager->requestExtension($id2, 30, 'Renew expired'));
+    $grant2 = $this->manager->getGrant($id2);
+    $this->assertSame(ClaimAccessManagerInterface::STATUS_PENDING, $grant2['status']);
+    $this->assertFalse($this->manager->hasAccess($node2, $user2, 'update'));
+
+    // Pending expired renewal does NOT block other users from claiming exclusive access.
+    $user3 = $this->createUser();
+    $id3 = $this->manager->grantAccess('node', (int) $node2->id(), (int) $user3->id(), ['view'], 'exclusive', time() + 1000);
+    $this->assertGreaterThan(0, $id3);
+
+    // Admin approves/extends the active grant: approval note is recorded.
     $this->assertTrue($this->manager->extendGrant($id, 30, TRUE));
     $updated_grant = $this->manager->getGrant($id);
     $this->assertSame(ClaimAccessManagerInterface::STATUS_ACTIVE, $updated_grant['status']);
+    $this->assertFalse(ClaimAccessManager::isExtensionPending($updated_grant['notes']));
     $this->assertTrue($this->manager->hasAccess($this->node, $user, 'update'));
   }
 

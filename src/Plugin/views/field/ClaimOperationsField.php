@@ -20,7 +20,7 @@ final class ClaimOperationsField extends FieldPluginBase {
 
   public function query(): void {
     $this->ensureMyTable();
-    $this->addAdditionalFields(['id', 'status', 'expires_at', 'uid']);
+    $this->addAdditionalFields(['id', 'status', 'expires_at', 'uid', 'notes']);
   }
 
   public function render(ResultRow $values): array {
@@ -28,11 +28,13 @@ final class ClaimOperationsField extends FieldPluginBase {
     $status_field = $this->aliases['status'] ?? 'status';
     $expires_at_field = $this->aliases['expires_at'] ?? 'expires_at';
     $uid_field = $this->aliases['uid'] ?? 'uid';
+    $notes_field = $this->aliases['notes'] ?? 'notes';
 
     $grant_id = (int) ($values->{$id_field} ?? $this->getValue($values, 'id'));
     $status = (string) ($values->{$status_field} ?? $this->getValue($values, 'status'));
     $expires_at = (int) ($values->{$expires_at_field} ?? $this->getValue($values, 'expires_at'));
     $grant_uid = (int) ($values->{$uid_field} ?? $this->getValue($values, 'uid'));
+    $notes = (string) ($values->{$notes_field} ?? $this->getValue($values, 'notes') ?? '');
 
     $current_account = \Drupal::currentUser();
     $is_admin = $current_account->hasPermission('administer claim access rights');
@@ -79,7 +81,7 @@ final class ClaimOperationsField extends FieldPluginBase {
 
     // Claimant user view: Request Extension button or pending status.
     if ($is_owner) {
-      if ($status === ClaimAccessManagerInterface::STATUS_PENDING) {
+      if ($status === ClaimAccessManagerInterface::STATUS_PENDING || ClaimAccessManager::isExtensionPending($notes)) {
         return [
           '#markup' => '<span style="background:#fef3c7; color:#b45309; padding:4px 10px; border-radius:4px; font-weight:700; font-size:11px;">PENDING REVIEW</span>',
         ];

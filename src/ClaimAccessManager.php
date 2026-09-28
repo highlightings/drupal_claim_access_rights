@@ -227,7 +227,7 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       ->fields('c')
       ->condition('entity_type', $entity_type)
       ->condition('entity_id', $entity_id)
-      ->condition('status', [self::STATUS_ACTIVE, self::STATUS_PENDING], 'IN');
+      ->condition('status', self::STATUS_ACTIVE);
 
     if ($exclude_grant_id) {
       $query->condition('id', $exclude_grant_id, '<>');
@@ -380,7 +380,7 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       ->fields('c')
       ->condition('entity_type', $entity_type)
       ->condition('entity_id', $entity_id)
-      ->condition('status', [self::STATUS_ACTIVE, self::STATUS_PENDING], 'IN');
+      ->condition('status', self::STATUS_ACTIVE);
 
     $query->condition($query->orConditionGroup()
       ->condition('expires_at', 0)
@@ -479,7 +479,7 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       }
 
       // Bringing an inactive replaced grant back must not create a second active holder.
-      if ($grant['mode'] === self::MODE_REPLACE && !in_array($grant['status'], [self::STATUS_ACTIVE, self::STATUS_PENDING], TRUE)) {
+      if ($grant['mode'] === self::MODE_REPLACE && $grant['status'] !== self::STATUS_ACTIVE) {
         foreach ($this->getActiveGrants((string) $grant['entity_type'], (int) $grant['entity_id']) as $other) {
           if ((int) $other['id'] !== $grant_id) {
             return FALSE;
@@ -493,11 +493,18 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
         }
       }
 
+      $fields = [
+        'expires_at' => $new_expiry,
+        'status' => self::STATUS_ACTIVE,
+      ];
+      $existing_notes = (string) ($grant['notes'] ?? '');
+      if (self::isExtensionPending($existing_notes)) {
+        $now_date = date('Y-m-d H:i', $now);
+        $fields['notes'] = trim($existing_notes . "\n" . "[{$now_date}] Extension approved: +{$additional_days} days.");
+      }
+
       $this->database->update('claim_access_grants')
-        ->fields([
-          'expires_at' => $new_expiry,
-          'status' => self::STATUS_ACTIVE,
-        ])
+        ->fields($fields)
         ->condition('id', $grant_id)
         ->execute();
       return TRUE;
@@ -562,13 +569,14 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       return TRUE;
     }
 
-    // Manual approval: record the request and mark status as pending review.
-    // The claimant preserves access to the item while waiting if their current
-    // grant window has not yet expired.
+    // Manual approval: record the request without modifying active status so
+    // legitimate access is preserved during review. If the grant was already
+    // expired, mark it as pending renewal.
+    $new_status = ($grant['status'] === self::STATUS_EXPIRED) ? self::STATUS_PENDING : $grant['status'];
     $note_line = "[{$now_date}] Extension requested: +{$additional_days} days." . ($reason ? " Reason: {$reason}" : '');
     $this->database->update('claim_access_grants')
       ->fields([
-        'status' => self::STATUS_PENDING,
+        'status' => $new_status,
         'notes' => trim($existing_notes . "\n" . $note_line),
       ])
       ->condition('id', $grant_id)
@@ -678,6 +686,7 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
     $stats = [
       'total' => 0,
       'active' => 0,
+      'pending' => 0,
       'no_expiry' => 0,
       'expiring_soon' => 0,
       'expired' => 0,
@@ -705,6 +714,10 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
               $stats['expiring_soon'] += $count;
             }
           }
+          break;
+
+        case self::STATUS_PENDING:
+          $stats['pending'] += $count;
           break;
 
         case self::STATUS_EXPIRED:
@@ -869,7 +882,7 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       $rows = $this->database->select('claim_access_grants', 'c')
         ->fields('c')
         ->condition('uid', $uid)
-        ->condition('status', [self::STATUS_ACTIVE, self::STATUS_PENDING], 'IN')
+        ->condition('status', self::STATUS_ACTIVE)
         ->execute()
         ->fetchAll(\PDO::FETCH_ASSOC);
       foreach ($rows as $row) {
@@ -882,6 +895,23 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       $this->userGrantIndex[$uid] = $index;
     }
     return $this->userGrantIndex[$uid][$entity_type . ':' . $entity_id] ?? NULL;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public static function isExtensionPending(?string $notes): bool {
+    if (!$notes) {
+      return FALSE;
+    }
+    $last_req = strrpos($notes, 'Extension requested:');
+    if ($last_req === FALSE) {
+      return FALSE;
+    }
+    $last_app = strrpos($notes, 'Extension approved:');
+    $last_auto = strrpos($notes, 'Auto-approved extension:');
+    $resolved_pos = max($last_app === FALSE ? -1 : $last_app, $last_auto === FALSE ? -1 : $last_auto);
+    return $last_req > $resolved_pos;
   }
 
   /**

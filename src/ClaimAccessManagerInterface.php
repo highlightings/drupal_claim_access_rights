@@ -274,4 +274,15 @@ interface ClaimAccessManagerInterface {
    */
   public function getGrantsMaxAge(array $grants): int;
 
+  /**
+   * Checks whether notes record an extension request awaiting review.
+   *
+   * @param string|null $notes
+   *   The grant notes text.
+   *
+   * @return bool
+   *   TRUE if an extension request is pending review.
+   */
+  public static function isExtensionPending(?string $notes): bool;
+
 }
