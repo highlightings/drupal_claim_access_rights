@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Drupal\Tests\claim_access_rights\Kernel;
 
+use Drupal\claim_access_rights\ClaimAccessManager;
 use Drupal\claim_access_rights\ClaimAccessManagerInterface;
 use Drupal\KernelTests\KernelTestBase;
 use Drupal\node\Entity\Node;
@@ -261,6 +262,270 @@ final class ClaimAccessManagerTest extends KernelTestBase {
     ];
     $short_max_age = $this->manager->getGrantsMaxAge($short_grants);
     $this->assertLessThanOrEqual(300, $short_max_age);
+  }
+
+  public function testHasAccessOperationsAndFutureWindow(): void {
+    $now = time();
+    $user_view_only = $this->createUser();
+    $user_full = $this->createUser();
+    $user_future = $this->createUser();
+
+    // 1. Grant 'view' only.
+    $this->manager->grantAccess('node', (int) $this->node->id(), (int) $user_view_only->id(), ['view'], NULL, $now + 86400, NULL, NULL, $now);
+    $this->assertTrue($this->manager->hasAccess($this->node, $user_view_only, 'view'));
+    $this->assertFalse($this->manager->hasAccess($this->node, $user_view_only, 'update'));
+
+    // 2. Grant 'view' and 'edit'.
+    $node2 = Node::create(['type' => 'listing', 'title' => 'Hall Edit Test']);
+    $node2->save();
+    $this->manager->grantAccess('node', (int) $node2->id(), (int) $user_full->id(), ['view', 'edit'], NULL, $now + 86400, NULL, NULL, $now);
+    $this->assertTrue($this->manager->hasAccess($node2, $user_full, 'view'));
+    $this->assertTrue($this->manager->hasAccess($node2, $user_full, 'update'));
+
+    // 3. Grant with starts_at in the future: access must be FALSE until start time arrives.
+    $node3 = Node::create(['type' => 'listing', 'title' => 'Hall Future Test']);
+    $node3->save();
+    $this->manager->grantAccess('node', (int) $node3->id(), (int) $user_future->id(), ['view', 'edit'], NULL, $now + 86400, NULL, NULL, $now + 3600);
+    $this->assertFalse($this->manager->hasAccess($node3, $user_future, 'view'));
+    $this->assertFalse($this->manager->hasAccess($node3, $user_future, 'update'));
+
+    // 4. Anonymous user is always denied access.
+    $anonymous = \Drupal::entityTypeManager()->getStorage('user')->load(0);
+    if ($anonymous) {
+      $this->assertFalse($this->manager->hasAccess($this->node, $anonymous, 'view'));
+    }
+
+    // 5. Disabled entity bundle is always denied access.
+    NodeType::create(['type' => 'page', 'name' => 'Page'])->save();
+    $page = Node::create(['type' => 'page', 'title' => 'Disabled Page']);
+    $page->save();
+    $this->assertFalse($this->manager->hasAccess($page, $user_full, 'view'));
+  }
+
+  public function testIsClaimableStatesAndReasons(): void {
+    $now = time();
+    $user1 = $this->createUser();
+    $user2 = $this->createUser();
+
+    // 1. Fresh, enabled entity is claimable.
+    $info1 = $this->manager->isClaimable($this->node, $user1);
+    $this->assertTrue($info1['claimable']);
+    $this->assertSame('This item is available to claim.', $info1['reason']);
+
+    // 2. Once claimed, the claimant viewing it sees they already hold an active grant.
+    $this->manager->grantAccess('node', (int) $this->node->id(), (int) $user1->id(), ['view'], 'exclusive', $now + 86400, NULL, NULL, $now);
+    $info_claimant = $this->manager->isClaimable($this->node, $user1);
+    $this->assertFalse($info_claimant['claimable']);
+    $this->assertTrue($info_claimant['user_is_claimant']);
+
+    // 3. Another user viewing an exclusive entity with a finite active window sees windows notice.
+    $info_other = $this->manager->isClaimable($this->node, $user2);
+    $this->assertTrue($info_other['claimable']);
+    $this->assertTrue($info_other['has_exclusive_windows']);
+
+    // 4. Another user viewing an entity with an indefinite exclusive grant (expires_at = 0).
+    $this->config('claim_access_rights.settings')->set('allow_permanent_claims', TRUE)->save();
+    $node_perm = Node::create(['type' => 'listing', 'title' => 'Permanent Node']);
+    $node_perm->save();
+    $this->manager->grantAccess('node', (int) $node_perm->id(), (int) $user1->id(), ['view'], 'exclusive', 0, NULL, NULL, $now);
+    $info_perm = $this->manager->isClaimable($node_perm, $user2);
+    $this->assertFalse($info_perm['claimable']);
+    $this->assertTrue($info_perm['permanently_claimed']);
+
+    // 5. Disabled bundle is not claimable.
+    if (!NodeType::load('page')) {
+      NodeType::create(['type' => 'page', 'name' => 'Page'])->save();
+    }
+    $page = Node::create(['type' => 'page', 'title' => 'Disabled Page 2']);
+    $page->save();
+    $info_disabled = $this->manager->isClaimable($page, $user1);
+    $this->assertFalse($info_disabled['claimable']);
+    $this->assertStringContainsString('not enabled', $info_disabled['reason']);
+  }
+
+  public function testReplaceModeTransitionsPriorGrants(): void {
+    $now = time();
+    $u1 = $this->createUser();
+    $u2 = $this->createUser();
+
+    // 1. User 1 acquires an initial grant.
+    $g1 = $this->manager->grantAccess('node', (int) $this->node->id(), (int) $u1->id(), ['view', 'edit'], 'append', $now + 86400, NULL, NULL, $now);
+    $this->assertSame(ClaimAccessManagerInterface::STATUS_ACTIVE, $this->manager->getGrant($g1)['status']);
+    $this->assertTrue($this->manager->hasAccess($this->node, $u1, 'update'));
+
+    // 2. User 2 claims under replace mode.
+    $g2 = $this->manager->grantAccess('node', (int) $this->node->id(), (int) $u2->id(), ['view', 'edit'], 'replace', $now + 86400, NULL, NULL, $now);
+    $this->assertSame(ClaimAccessManagerInterface::STATUS_ACTIVE, $this->manager->getGrant($g2)['status']);
+    $this->assertSame(ClaimAccessManagerInterface::STATUS_REPLACED, $this->manager->getGrant($g1)['status']);
+
+    // User 1 access revoked; User 2 access granted.
+    $this->assertFalse($this->manager->hasAccess($this->node, $u1, 'update'));
+    $this->assertTrue($this->manager->hasAccess($this->node, $u2, 'update'));
+
+    // 3. User 1 cannot self-extend a replaced grant while another active grant exists.
+    $this->assertFalse($this->manager->extendGrant($g1, 30));
+  }
+
+  public function testReclaimOwnActiveGrantRefreshesInPlace(): void {
+    $now = time();
+    $user = $this->createUser();
+
+    // First claim returns ID.
+    $id1 = $this->manager->grantAccess('node', (int) $this->node->id(), (int) $user->id(), ['view'], 'exclusive', $now + 1000, NULL, NULL, $now);
+    $grant1 = $this->manager->getGrant($id1);
+    $this->assertSame($now + 1000, (int) $grant1['expires_at']);
+
+    // Re-claiming the same entity by the same user updates in place without collision.
+    $id2 = $this->manager->grantAccess('node', (int) $this->node->id(), (int) $user->id(), ['view', 'edit'], 'exclusive', $now + 5000, 'Updated notes', NULL, $now);
+    $this->assertSame($id1, $id2);
+
+    $grant2 = $this->manager->getGrant($id1);
+    $this->assertSame($now + 5000, (int) $grant2['expires_at']);
+    $this->assertSame('view,edit', $grant2['rights']);
+    $this->assertSame('Updated notes', $grant2['notes']);
+  }
+
+  public function testUserClaimLimitEnforcement(): void {
+    $this->config('claim_access_rights.settings')->set('max_active_claims_per_user', 2)->save();
+    $user = $this->createUser();
+
+    $node1 = $this->node;
+    $node2 = Node::create(['type' => 'listing', 'title' => 'Limit Node 2']);
+    $node2->save();
+    $node3 = Node::create(['type' => 'listing', 'title' => 'Limit Node 3']);
+    $node3->save();
+
+    // User claims 1st node.
+    $this->assertNull($this->manager->validateUserClaimLimit((int) $user->id()));
+    $this->manager->grantAccess('node', (int) $node1->id(), (int) $user->id(), ['view']);
+
+    // User claims 2nd node.
+    $this->assertNull($this->manager->validateUserClaimLimit((int) $user->id()));
+    $this->manager->grantAccess('node', (int) $node2->id(), (int) $user->id(), ['view']);
+
+    // Attempting 3rd claim exceeds limit.
+    $limit_err = $this->manager->validateUserClaimLimit((int) $user->id());
+    $this->assertNotNull($limit_err);
+    $this->assertStringContainsString('maximum number of active claims (2)', $limit_err);
+  }
+
+  public function testStatisticsAggregation(): void {
+    $now = time();
+    $u1 = $this->createUser();
+    $u2 = $this->createUser();
+
+    $n1 = $this->node;
+    $n2 = Node::create(['type' => 'listing', 'title' => 'Stats 2']);
+    $n2->save();
+    $n3 = Node::create(['type' => 'listing', 'title' => 'Stats 3']);
+    $n3->save();
+
+    // 1. Active grant.
+    $this->manager->grantAccess('node', (int) $n1->id(), (int) $u1->id(), ['view'], 'exclusive', $now + 86400, NULL, NULL, $now);
+
+    // 2. Replaced grant (via replace mode on n1).
+    $this->manager->grantAccess('node', (int) $n1->id(), (int) $u2->id(), ['view'], 'replace', $now + 86400, NULL, NULL, $now);
+
+    // 3. Revoked grant on n2.
+    $g3 = $this->manager->grantAccess('node', (int) $n2->id(), (int) $u1->id(), ['view'], 'exclusive', $now + 86400, NULL, NULL, $now);
+    $this->manager->revokeGrant($g3);
+
+    // 4. Expired grant on n3.
+    $g4 = $this->manager->grantAccess('node', (int) $n3->id(), (int) $u1->id(), ['view'], 'exclusive', $now + 1, NULL, NULL, $now);
+    $this->container->get('database')->update('claim_access_grants')
+      ->fields(['expires_at' => $now - 100, 'status' => ClaimAccessManagerInterface::STATUS_EXPIRED])
+      ->condition('id', $g4)
+      ->execute();
+
+    $stats = $this->manager->getStatistics();
+    $this->assertGreaterThanOrEqual(4, $stats['total']);
+    $this->assertGreaterThanOrEqual(1, $stats['active']);
+    $this->assertGreaterThanOrEqual(1, $stats['replaced']);
+    $this->assertGreaterThanOrEqual(1, $stats['revoked']);
+    $this->assertGreaterThanOrEqual(1, $stats['expired']);
+    $this->assertArrayHasKey('node', $stats['by_entity_type']);
+  }
+
+  public function testExtensionAutoApproveWithLifetimeCap(): void {
+    $this->config('claim_access_rights.settings')
+      ->set('user_extension_auto_approve', TRUE)
+      ->set('max_claim_days', 60)
+      ->save();
+
+    $now = time();
+    $user = $this->createUser();
+    $id = $this->manager->grantAccess('node', (int) $this->node->id(), (int) $user->id(), ['view', 'edit'], 'exclusive', $now + 30 * 86400, NULL, NULL, $now);
+
+    // 1. Auto-approve 15 days: total becomes 45 days (within 60 day cap).
+    $this->assertTrue($this->manager->requestExtension($id, 15, 'Legitimate auto extension'));
+    $grant1 = $this->manager->getGrant($id);
+    $this->assertSame($now + 45 * 86400, (int) $grant1['expires_at']);
+    $this->assertStringContainsString('Auto-approved extension: +15 days', $grant1['notes']);
+
+    // 2. Requesting 30 more days would push total to 75 days (exceeds 60 days): rejected.
+    $this->assertFalse($this->manager->requestExtension($id, 30, 'Exceeding cap'));
+    $grant2 = $this->manager->getGrant($id);
+    $this->assertSame($now + 45 * 86400, (int) $grant2['expires_at']);
+  }
+
+  public function testTargetEntityValidation(): void {
+    $user = $this->createUser();
+    $now = time();
+
+    // 1. Non-existent entity ID.
+    try {
+      $this->manager->grantAccess('node', 999999, (int) $user->id(), ['view']);
+      $this->fail('Expected exception for nonexistent entity ID.');
+    }
+    catch (\InvalidArgumentException $e) {
+      $this->assertStringContainsString('The target entity cannot be claimed', $e->getMessage());
+    }
+
+    // 2. Non-existent entity type.
+    try {
+      $this->manager->grantAccess('nonexistent_entity_type', 1, (int) $user->id(), ['view']);
+      $this->fail('Expected exception for nonexistent entity type.');
+    }
+    catch (\InvalidArgumentException $e) {
+      $this->assertStringContainsString('The target entity cannot be claimed', $e->getMessage());
+    }
+
+    // 3. End before start timestamp.
+    try {
+      $this->manager->grantAccess('node', (int) $this->node->id(), (int) $user->id(), ['view'], NULL, $now, NULL, NULL, $now + 500);
+      $this->fail('Expected exception for end before start.');
+    }
+    catch (\InvalidArgumentException $e) {
+      $this->assertStringContainsString('The end of the access window is before its start', $e->getMessage());
+    }
+  }
+
+  public function testBannerBuilderRendersStructuredArrays(): void {
+    $banner_builder = $this->container->get('claim_access_rights.banner_builder');
+    $user = $this->createUser();
+
+    // 1. Banner for enabled entity with anonymous user.
+    $banner_anon = $banner_builder->buildBanner('node', (int) $this->node->id());
+    $this->assertNotEmpty($banner_anon);
+    $this->assertSame('container', $banner_anon['#type']);
+    $this->assertArrayHasKey('#cache', $banner_anon);
+
+    // 2. Grant access so current user is claimant.
+    $this->manager->grantAccess('node', (int) $this->node->id(), (int) $user->id(), ['view', 'edit']);
+    // Log in user.
+    $this->container->get('current_user')->setAccount($user);
+    $banner_claimant = $banner_builder->buildBanner('node', (int) $this->node->id());
+    $this->assertNotEmpty($banner_claimant);
+    $this->assertArrayHasKey('content', $banner_claimant);
+
+    // 3. Banner for non-enabled entity bundle returns empty array.
+    if (!NodeType::load('page')) {
+      NodeType::create(['type' => 'page', 'name' => 'Page'])->save();
+    }
+    $page = Node::create(['type' => 'page', 'title' => 'Page Not Enabled']);
+    $page->save();
+    $banner_disabled = $banner_builder->buildBanner('node', (int) $page->id());
+    $this->assertEmpty($banner_disabled);
   }
 
 }
