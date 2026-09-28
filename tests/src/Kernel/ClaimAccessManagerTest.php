@@ -146,6 +146,8 @@ final class ClaimAccessManagerTest extends KernelTestBase {
     // An active grant remains STATUS_ACTIVE so access is preserved and queries are not corrupted.
     $grant = $this->manager->getGrant($id);
     $this->assertSame(ClaimAccessManagerInterface::STATUS_ACTIVE, $grant['status']);
+    $this->assertSame(1, (int) $grant['extension_requested']);
+    $this->assertTrue(ClaimAccessManager::isExtensionPending($grant));
     $this->assertTrue(ClaimAccessManager::isExtensionPending($grant['notes']));
     $this->assertTrue($this->manager->hasAccess($this->node, $user, 'update'));
 
@@ -162,6 +164,8 @@ final class ClaimAccessManagerTest extends KernelTestBase {
     $this->assertTrue($this->manager->requestExtension($id2, 30, 'Renew expired'));
     $grant2 = $this->manager->getGrant($id2);
     $this->assertSame(ClaimAccessManagerInterface::STATUS_PENDING, $grant2['status']);
+    $this->assertSame(1, (int) $grant2['extension_requested']);
+    $this->assertTrue(ClaimAccessManager::isExtensionPending($grant2));
     $this->assertFalse($this->manager->hasAccess($node2, $user2, 'update'));
 
     // Pending expired renewal does NOT block other users from claiming exclusive access.
@@ -169,10 +173,12 @@ final class ClaimAccessManagerTest extends KernelTestBase {
     $id3 = $this->manager->grantAccess('node', (int) $node2->id(), (int) $user3->id(), ['view'], 'exclusive', time() + 1000);
     $this->assertGreaterThan(0, $id3);
 
-    // Admin approves/extends the active grant: approval note is recorded.
+    // Admin approves/extends the active grant: approval note is recorded and flag cleared.
     $this->assertTrue($this->manager->extendGrant($id, 30, TRUE));
     $updated_grant = $this->manager->getGrant($id);
     $this->assertSame(ClaimAccessManagerInterface::STATUS_ACTIVE, $updated_grant['status']);
+    $this->assertSame(0, (int) $updated_grant['extension_requested']);
+    $this->assertFalse(ClaimAccessManager::isExtensionPending($updated_grant));
     $this->assertFalse(ClaimAccessManager::isExtensionPending($updated_grant['notes']));
     $this->assertTrue($this->manager->hasAccess($this->node, $user, 'update'));
   }
@@ -235,15 +241,19 @@ final class ClaimAccessManagerTest extends KernelTestBase {
     $this->assertTrue($this->manager->requestExtension($id, 30, $malicious_reason));
 
     $grant = $this->manager->getGrant($id);
-    // Request must still be recognized as pending.
+    // Request must still be recognized as pending both on the record flag and in notes.
+    $this->assertSame(1, (int) $grant['extension_requested']);
+    $this->assertTrue(ClaimAccessManager::isExtensionPending($grant));
     $this->assertTrue(ClaimAccessManager::isExtensionPending($grant['notes']));
 
     // Cannot spam second extension while one is already pending.
     $this->assertFalse($this->manager->requestExtension($id, 30, 'Spam request'));
 
-    // Admin approval clears the pending state.
+    // Admin approval clears the pending state and column flag.
     $this->assertTrue($this->manager->extendGrant($id, 30, TRUE));
     $updated_grant = $this->manager->getGrant($id);
+    $this->assertSame(0, (int) $updated_grant['extension_requested']);
+    $this->assertFalse(ClaimAccessManager::isExtensionPending($updated_grant));
     $this->assertFalse(ClaimAccessManager::isExtensionPending($updated_grant['notes']));
   }
 

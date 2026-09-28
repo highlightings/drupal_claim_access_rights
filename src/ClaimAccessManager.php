@@ -168,6 +168,7 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
               'mode' => $mode,
               'notes' => $notes,
               'submission_id' => $submission_id ?? 0,
+              'extension_requested' => 0,
             ])
             ->condition('id', $grant_id)
             ->execute();
@@ -186,6 +187,7 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
               'expires_at' => $expires_at,
               'submission_id' => $submission_id ?? 0,
               'notes' => $notes,
+              'extension_requested' => 0,
             ])
             ->execute();
         }
@@ -436,7 +438,10 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
     }
 
     $this->database->update('claim_access_grants')
-      ->fields(['status' => self::STATUS_REVOKED])
+      ->fields([
+        'status' => self::STATUS_REVOKED,
+        'extension_requested' => 0,
+      ])
       ->condition('id', $grant_id)
       ->execute();
 
@@ -507,9 +512,10 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       $fields = [
         'expires_at' => $new_expiry,
         'status' => self::STATUS_ACTIVE,
+        'extension_requested' => 0,
       ];
       $existing_notes = (string) ($grant['notes'] ?? '');
-      if (self::isExtensionPending($existing_notes)) {
+      if (self::isExtensionPending($grant)) {
         $now_date = date('Y-m-d H:i', $now);
         $fields['notes'] = trim($existing_notes . "\n" . "[{$now_date}] Extension approved: +{$additional_days} days.");
       }
@@ -552,7 +558,7 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
     $existing_notes = (string) ($grant['notes'] ?? '');
 
     // Disallow submitting a new extension request if one is already pending.
-    if (!$auto_approve && self::isExtensionPending($existing_notes)) {
+    if (!$auto_approve && self::isExtensionPending($grant)) {
       return FALSE;
     }
 
@@ -578,7 +584,10 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       }
       $note_line = "[{$now_date}] Auto-approved extension: +{$additional_days} days." . ($reason ? " Reason: {$reason}" : '');
       $this->database->update('claim_access_grants')
-        ->fields(['notes' => trim($existing_notes . "\n" . $note_line)])
+        ->fields([
+          'notes' => trim($existing_notes . "\n" . $note_line),
+          'extension_requested' => 0,
+        ])
         ->condition('id', $grant_id)
         ->execute();
 
@@ -597,6 +606,7 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
     $this->database->update('claim_access_grants')
       ->fields([
         'status' => $new_status,
+        'extension_requested' => 1,
         'notes' => trim($existing_notes . "\n" . $note_line),
       ])
       ->condition('id', $grant_id)
@@ -932,7 +942,25 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
   /**
    * {@inheritdoc}
    */
-  public static function isExtensionPending(?string $notes): bool {
+  public static function isExtensionPending(array|string|null $grant_or_notes): bool {
+    if (is_array($grant_or_notes)) {
+      if (isset($grant_or_notes['extension_requested'])) {
+        return (bool) $grant_or_notes['extension_requested'];
+      }
+      $grant_or_notes = $grant_or_notes['notes'] ?? NULL;
+    }
+
+    if (!$grant_or_notes) {
+      return FALSE;
+    }
+
+    return self::isExtensionPendingNotes((string) $grant_or_notes);
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public static function isExtensionPendingNotes(?string $notes): bool {
     if (!$notes) {
       return FALSE;
     }

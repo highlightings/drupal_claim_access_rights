@@ -104,6 +104,14 @@ function claim_access_rights_schema(): array {
         'size' => 'big',
         'not null' => FALSE,
       ],
+      'extension_requested' => [
+        'description' => 'Flag indicating an extension request is pending admin review: 1 = pending, 0 = none.',
+        'type' => 'int',
+        'size' => 'tiny',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ],
     ],
     'primary key' => ['id'],
     'indexes' => [
@@ -111,6 +119,7 @@ function claim_access_rights_schema(): array {
       'user_grants' => ['uid', 'status'],
       'status_expiry' => ['status', 'expires_at'],
       'date_range' => ['entity_type', 'entity_id', 'status', 'starts_at', 'expires_at'],
+      'pending_extension' => ['extension_requested', 'status'],
     ],
   ];
 
@@ -159,4 +168,49 @@ function claim_access_rights_update_10002(): string {
   }
   $config->save();
   return 'Added claim limit settings (permissive on existing sites); please review them.';
+}
+
+/**
+ * Add extension_requested column to claim_access_grants table and backfill.
+ */
+function claim_access_rights_update_10003(): string {
+  $database = \Drupal::database();
+  $schema = $database->schema();
+  if (!$schema->fieldExists('claim_access_grants', 'extension_requested')) {
+    $schema->addField('claim_access_grants', 'extension_requested', [
+      'description' => 'Flag indicating an extension request is pending admin review: 1 = pending, 0 = none.',
+      'type' => 'int',
+      'size' => 'tiny',
+      'unsigned' => TRUE,
+      'not null' => TRUE,
+      'default' => 0,
+    ]);
+    $schema->addIndex('claim_access_grants', 'pending_extension', ['extension_requested', 'status'], [
+      'fields' => [
+        'extension_requested' => ['type' => 'int', 'size' => 'tiny'],
+        'status' => ['type' => 'varchar', 'length' => 32],
+      ],
+    ]);
+
+    // Backfill extension_requested for any existing rows with pending notes.
+    $rows = $database->select('claim_access_grants', 'c')
+      ->fields('c', ['id', 'notes'])
+      ->condition('status', ['active', 'pending'], 'IN')
+      ->isNotNull('notes')
+      ->execute()
+      ->fetchAll(\PDO::FETCH_ASSOC);
+
+    $backfilled = 0;
+    foreach ($rows as $row) {
+      if (!empty($row['notes']) && \Drupal\claim_access_rights\ClaimAccessManager::isExtensionPendingNotes((string) $row['notes'])) {
+        $database->update('claim_access_grants')
+          ->fields(['extension_requested' => 1])
+          ->condition('id', (int) $row['id'])
+          ->execute();
+        $backfilled++;
+      }
+    }
+    return "Added extension_requested column and backfilled {$backfilled} pending extension request(s).";
+  }
+  return 'extension_requested column already exists.';
 }

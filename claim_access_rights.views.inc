@@ -221,6 +221,23 @@ function claim_access_rights_views_data(): array {
     ],
   ];
 
+  // Extension Requested.
+  $data['claim_access_grants']['extension_requested'] = [
+    'title' => t('Extension Requested'),
+    'help' => t('Whether an extension request is currently pending admin review.'),
+    'field' => [
+      'id' => 'boolean',
+    ],
+    'filter' => [
+      'id' => 'boolean',
+      'label' => t('Extension request pending'),
+      'type' => 'yes-no',
+    ],
+    'sort' => [
+      'id' => 'standard',
+    ],
+  ];
+
   // Operations.
   $data['claim_access_grants']['operations'] = [
     'title' => t('Operations'),
