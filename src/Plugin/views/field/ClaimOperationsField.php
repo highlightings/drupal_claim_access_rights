@@ -83,7 +83,7 @@ final class ClaimOperationsField extends FieldPluginBase {
 
     // Claimant user view: Request Extension button or pending status.
     if ($is_owner) {
-      if ($status === ClaimAccessManagerInterface::STATUS_PENDING || $extension_requested || ClaimAccessManager::isExtensionPending($notes)) {
+      if ($status === ClaimAccessManagerInterface::STATUS_PENDING || $extension_requested) {
         return [
           '#markup' => '<span style="background:#fef3c7; color:#b45309; padding:4px 10px; border-radius:4px; font-weight:700; font-size:11px;">PENDING REVIEW</span>',
         ];

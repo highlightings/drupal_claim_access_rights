@@ -202,7 +202,21 @@ function claim_access_rights_update_10003(): string {
 
     $backfilled = 0;
     foreach ($rows as $row) {
-      if (!empty($row['notes']) && \Drupal\claim_access_rights\ClaimAccessManager::isExtensionPendingNotes((string) $row['notes'])) {
+      if (empty($row['notes'])) {
+        continue;
+      }
+      $lines = preg_split('/\r\n|\r|\n/', (string) $row['notes']);
+      $pending_count = 0;
+      foreach ($lines as $line) {
+        $line = trim($line);
+        if (preg_match('/^\[\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?\]\s*Extension requested:/i', $line)) {
+          $pending_count++;
+        }
+        elseif (preg_match('/^\[\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?\]\s*(?:Extension approved|Auto-approved extension):/i', $line)) {
+          $pending_count = max(0, $pending_count - 1);
+        }
+      }
+      if ($pending_count > 0) {
         $database->update('claim_access_grants')
           ->fields(['extension_requested' => 1])
           ->condition('id', (int) $row['id'])

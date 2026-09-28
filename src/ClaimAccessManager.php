@@ -942,42 +942,8 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
   /**
    * {@inheritdoc}
    */
-  public static function isExtensionPending(array|string|null $grant_or_notes): bool {
-    if (is_array($grant_or_notes)) {
-      if (isset($grant_or_notes['extension_requested'])) {
-        return (bool) $grant_or_notes['extension_requested'];
-      }
-      $grant_or_notes = $grant_or_notes['notes'] ?? NULL;
-    }
-
-    if (!$grant_or_notes) {
-      return FALSE;
-    }
-
-    return self::isExtensionPendingNotes((string) $grant_or_notes);
-  }
-
-  /**
-   * {@inheritdoc}
-   */
-  public static function isExtensionPendingNotes(?string $notes): bool {
-    if (!$notes) {
-      return FALSE;
-    }
-    // Parse notes line-by-line to prevent spoofing by user-supplied reason text.
-    $lines = preg_split('/\r\n|\r|\n/', $notes);
-    $pending_count = 0;
-    foreach ($lines as $line) {
-      $line = trim($line);
-      // Strictly match system-formatted event prefixes at the start of the line.
-      if (preg_match('/^\[\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?\]\s*Extension requested:/i', $line)) {
-        $pending_count++;
-      }
-      elseif (preg_match('/^\[\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?\]\s*(?:Extension approved|Auto-approved extension):/i', $line)) {
-        $pending_count = max(0, $pending_count - 1);
-      }
-    }
-    return $pending_count > 0;
+  public static function isExtensionPending(array $grant): bool {
+    return !empty($grant['extension_requested']);
   }
 
   /**
@@ -995,11 +961,8 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
    */
   private function withEntityLock(string $entity_type, int $entity_id, callable $callback): mixed {
     $name = 'claim_access_rights:' . $entity_type . ':' . $entity_id;
-    if (!$this->lock->acquire($name, 10.0)) {
-      $this->lock->wait($name, 2);
-      if (!$this->lock->acquire($name, 10.0)) {
-        throw new \RuntimeException('Could not obtain a lock for this item. Please try again.');
-      }
+    if (!$this->lock->acquire($name, 5.0)) {
+      throw new \RuntimeException('Could not obtain a lock for this item. Please try again.');
     }
     try {
       return $callback();

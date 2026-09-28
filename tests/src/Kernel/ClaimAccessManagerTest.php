@@ -148,7 +148,6 @@ final class ClaimAccessManagerTest extends KernelTestBase {
     $this->assertSame(ClaimAccessManagerInterface::STATUS_ACTIVE, $grant['status']);
     $this->assertSame(1, (int) $grant['extension_requested']);
     $this->assertTrue(ClaimAccessManager::isExtensionPending($grant));
-    $this->assertTrue(ClaimAccessManager::isExtensionPending($grant['notes']));
     $this->assertTrue($this->manager->hasAccess($this->node, $user, 'update'));
 
     // 2. Request extension on an EXPIRED grant: status transitions to STATUS_PENDING.
@@ -179,7 +178,6 @@ final class ClaimAccessManagerTest extends KernelTestBase {
     $this->assertSame(ClaimAccessManagerInterface::STATUS_ACTIVE, $updated_grant['status']);
     $this->assertSame(0, (int) $updated_grant['extension_requested']);
     $this->assertFalse(ClaimAccessManager::isExtensionPending($updated_grant));
-    $this->assertFalse(ClaimAccessManager::isExtensionPending($updated_grant['notes']));
     $this->assertTrue($this->manager->hasAccess($this->node, $user, 'update'));
   }
 
@@ -241,10 +239,9 @@ final class ClaimAccessManagerTest extends KernelTestBase {
     $this->assertTrue($this->manager->requestExtension($id, 30, $malicious_reason));
 
     $grant = $this->manager->getGrant($id);
-    // Request must still be recognized as pending both on the record flag and in notes.
+    // Request must still be recognized as pending on the record flag.
     $this->assertSame(1, (int) $grant['extension_requested']);
     $this->assertTrue(ClaimAccessManager::isExtensionPending($grant));
-    $this->assertTrue(ClaimAccessManager::isExtensionPending($grant['notes']));
 
     // Cannot spam second extension while one is already pending.
     $this->assertFalse($this->manager->requestExtension($id, 30, 'Spam request'));
@@ -254,7 +251,6 @@ final class ClaimAccessManagerTest extends KernelTestBase {
     $updated_grant = $this->manager->getGrant($id);
     $this->assertSame(0, (int) $updated_grant['extension_requested']);
     $this->assertFalse(ClaimAccessManager::isExtensionPending($updated_grant));
-    $this->assertFalse(ClaimAccessManager::isExtensionPending($updated_grant['notes']));
   }
 
   public function testGrantsMaxAgeCapping(): void {
