@@ -83,6 +83,13 @@ final class ClaimAccessWebformHandler extends WebformHandlerBase implements Cont
       return;
     }
 
+    // Do not rely solely on Webform's access configuration: submissions can
+    // also be created through alternate Webform entry points.
+    if (!$this->currentUser->hasPermission('claim access rights')) {
+      $form_state->setErrorByName('target_entity_title', (string) $this->t('You do not have permission to submit access claims.'));
+      return;
+    }
+
     $values = $form_state->getValues();
     $entity_id = (int) ($values['target_entity_id'] ?? 0);
     $entity_type = (string) ($values['target_entity_type'] ?? 'node');
@@ -116,6 +123,12 @@ final class ClaimAccessWebformHandler extends WebformHandlerBase implements Cont
 
     // Only process new submissions.
     if ($update) {
+      return;
+    }
+
+    // Defense in depth for programmatic/API-created submissions.
+    if (!$this->currentUser->hasPermission('claim access rights')) {
+      $this->messenger->addError($this->t('Your claim could not be processed because you do not have permission to submit access claims.'));
       return;
     }
 

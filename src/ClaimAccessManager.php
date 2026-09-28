@@ -25,7 +25,7 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
   private readonly LoggerChannelInterface $logger;
 
   /**
-   * Per-request index of a user's active grants: [uid => ["type:id" => row]].
+   * Per-request cache of user active grants: [uid => ["type:id" => row|null]].
    */
   private array $userGrantIndex = [];
 
@@ -250,32 +250,28 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       ->condition('expires_at', $starts_at, '>')
     );
 
-    // If requested interval has finite end, existing grant must start before requested interval ends.
+    // If requested interval has finite end, the existing grant must start
+    // before the requested interval ends. Legacy rows with starts_at = 0 use
+    // created as their effective start time.
     if ($expires_at > 0) {
-      $query->condition('starts_at', $expires_at, '<');
+      $query->condition($query->orConditionGroup()
+        ->condition($query->andConditionGroup()
+          ->condition('starts_at', 0, '>')
+          ->condition('starts_at', $expires_at, '<')
+        )
+        ->condition($query->andConditionGroup()
+          ->condition('starts_at', 0)
+          ->condition('created', $expires_at, '<')
+        )
+      );
     }
 
-    $grants = $query->execute()->fetchAll(\PDO::FETCH_ASSOC);
-
-    // Problem 1: Precise mathematical interval overlap handling for open-ended and finite intervals.
-    foreach ($grants as $grant) {
-      $g_start = (int) ($grant['starts_at'] ?: $grant['created']);
-      $g_end = (int) $grant['expires_at'];
-
-      // Skip expired grants if any bypassed SQL.
-      if ($g_end > 0 && $g_end <= $now) {
-        continue;
-      }
-
-      $overlaps = ($expires_at === 0 || $expires_at > $g_start)
-        && ($g_end === 0 || $starts_at < $g_end);
-
-      if ($overlaps) {
-        return $grant;
-      }
-    }
-
-    return NULL;
+    // The SQL predicates above fully express interval overlap, so only one
+    // conflict is needed. Avoid materializing every matching grant.
+    return $query
+      ->range(0, 1)
+      ->execute()
+      ->fetchAssoc() ?: NULL;
   }
 
   /**
@@ -677,7 +673,6 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       ->execute();
 
     if ($deleted > 0) {
-      $this->userGrantIndex = [];
       $tags = ['claim_access_grants', 'user:' . $uid];
       foreach ($rows as $row) {
         $tags[] = self::entityTag((string) $row['entity_type'], (int) $row['entity_id']);
@@ -916,27 +911,39 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
   }
 
   /**
-   * Returns the user's active grant for an entity, using a per-request index.
+   * Returns the user's active grant for an entity.
+   *
+   * This is intentionally a targeted lookup. Access checks run frequently, so
+   * loading every active grant for the account would make the cost of one
+   * entity access check grow with the user's total number of grants.
    */
   private function getUserGrantFor(string $entity_type, int $entity_id, int $uid): ?array {
-    if (!isset($this->userGrantIndex[$uid])) {
-      $index = [];
-      $rows = $this->database->select('claim_access_grants', 'c')
-        ->fields('c')
-        ->condition('uid', $uid)
-        ->condition('status', self::STATUS_ACTIVE)
-        ->execute()
-        ->fetchAll(\PDO::FETCH_ASSOC);
-      foreach ($rows as $row) {
-        $key = $row['entity_type'] . ':' . $row['entity_id'];
-        // Prefer a grant that is currently in effect if there are several.
-        if (!isset($index[$key]) || $this->isGrantInEffect($row)) {
-          $index[$key] = $row;
-        }
-      }
-      $this->userGrantIndex[$uid] = $index;
+    $key = $entity_type . ':' . $entity_id;
+    if (isset($this->userGrantIndex[$uid]) && array_key_exists($key, $this->userGrantIndex[$uid])) {
+      return $this->userGrantIndex[$uid][$key];
     }
-    return $this->userGrantIndex[$uid][$entity_type . ':' . $entity_id] ?? NULL;
+
+    $now = $this->time->getRequestTime();
+    $query = $this->database->select('claim_access_grants', 'c')
+      ->fields('c')
+      ->condition('uid', $uid)
+      ->condition('entity_type', $entity_type)
+      ->condition('entity_id', $entity_id)
+      ->condition('status', self::STATUS_ACTIVE);
+
+    $query->condition($query->orConditionGroup()
+      ->condition('expires_at', 0)
+      ->condition('expires_at', $now, '>')
+    );
+
+    // Prefer the earliest grant window. This selects a current grant over a
+    // future one when legacy data contains multiple active rows.
+    $query->orderBy('starts_at', 'ASC');
+    $query->orderBy('created', 'ASC');
+
+    $row = $query->range(0, 1)->execute()->fetchAssoc();
+    $this->userGrantIndex[$uid][$key] = $row ?: NULL;
+    return $this->userGrantIndex[$uid][$key];
   }
 
   /**
