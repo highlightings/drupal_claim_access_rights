@@ -7,6 +7,8 @@ namespace Drupal\claim_access_rights\Plugin\Action;
 use Drupal\claim_access_rights\ClaimAccessManagerInterface;
 use Drupal\Core\Action\ActionBase;
 use Drupal\Core\Action\Attribute\Action;
+use Drupal\Core\Config\ConfigFactoryInterface;
+use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Plugin\ContainerFactoryPluginInterface;
 use Drupal\Core\Session\AccountInterface;
 use Drupal\Core\StringTranslation\TranslatableMarkup;
@@ -34,6 +36,8 @@ final class GrantClaimAccessAction extends ActionBase implements ContainerFactor
     $plugin_id,
     $plugin_definition,
     private readonly ClaimAccessManagerInterface $claimAccessManager,
+    private readonly ConfigFactoryInterface $configFactory,
+    private readonly EntityTypeManagerInterface $entityTypeManager,
   ) {
     parent::__construct($configuration, $plugin_id, $plugin_definition);
   }
@@ -52,6 +56,8 @@ final class GrantClaimAccessAction extends ActionBase implements ContainerFactor
       $plugin_id,
       $plugin_definition,
       $container->get('claim_access_rights.manager'),
+      $container->get('config.factory'),
+      $container->get('entity_type.manager'),
     );
   }
 
@@ -60,6 +66,14 @@ final class GrantClaimAccessAction extends ActionBase implements ContainerFactor
    */
   public function execute($object = NULL): void {
     if (!$object instanceof WebformSubmissionInterface) {
+      return;
+    }
+
+    // Only act when the site is configured for ECA approval. Otherwise the
+    // immediate handler (or an administrator) owns the decision, and running
+    // here as well would approve claims the admin chose to review manually.
+    $mode = (string) $this->configFactory->get('claim_access_rights.settings')->get('auto_approval_mode') ?: 'eca';
+    if ($mode !== 'eca') {
       return;
     }
 
@@ -94,7 +108,39 @@ final class GrantClaimAccessAction extends ActionBase implements ContainerFactor
       $expires_at = strtotime($end_date_str . ' 23:59:59');
     }
     else {
-      $expires_at = null;
+      // No end date and no permanent flag is not a request for permanence.
+      $expires_at = FALSE;
+    }
+
+    if ($starts_at === FALSE || $expires_at === FALSE) {
+      \Drupal::logger('claim_access_rights')->warning('Submission @id rejected: missing or invalid dates.', ['@id' => $submission_id]);
+      return;
+    }
+
+    // ECA can fire for submissions created outside the form, so re-validate
+    // everything the form handler would have checked.
+    $owner = $object->getOwner();
+    if (!$owner || !$owner->hasPermission('claim access rights')) {
+      \Drupal::logger('claim_access_rights')->warning('Submission @id rejected: owner may not claim access.', ['@id' => $submission_id]);
+      return;
+    }
+    $entity = $this->entityTypeManager->hasDefinition($entity_type)
+      ? $this->entityTypeManager->getStorage($entity_type)->load($entity_id)
+      : NULL;
+    $error = NULL;
+    if (!$entity) {
+      $error = 'target entity not found';
+    }
+    elseif (empty($this->claimAccessManager->isClaimable($entity, $owner)['claimable'])) {
+      $error = 'target is not claimable';
+    }
+    else {
+      $error = $this->claimAccessManager->validateClaimWindow((int) $starts_at, (int) $expires_at)
+        ?? $this->claimAccessManager->validateUserClaimLimit($uid);
+    }
+    if ($error !== NULL) {
+      \Drupal::logger('claim_access_rights')->warning('Submission @id rejected: @error', ['@id' => $submission_id, '@error' => $error]);
+      return;
     }
 
     try {
@@ -104,10 +150,10 @@ final class GrantClaimAccessAction extends ActionBase implements ContainerFactor
         $uid,
         $rights,
         null,
-        $expires_at,
+        (int) $expires_at,
         $notes,
         $submission_id,
-        $starts_at
+        (int) $starts_at
       );
     }
     catch (\Throwable $e) {
@@ -121,7 +167,13 @@ final class GrantClaimAccessAction extends ActionBase implements ContainerFactor
    * {@inheritdoc}
    */
   public function access($object, ?AccountInterface $account = NULL, $return_as_object = FALSE) {
-    return $return_as_object ? \Drupal\Core\Access\AccessResult::allowed() : TRUE;
+    // Grant only for submissions whose owner is allowed to claim.
+    $owner = $object instanceof WebformSubmissionInterface ? $object->getOwner() : NULL;
+    $result = ($owner && $owner->hasPermission('claim access rights'))
+      ? \Drupal\Core\Access\AccessResult::allowed()
+      : \Drupal\Core\Access\AccessResult::forbidden();
+    $result->addCacheContexts(['user.permissions']);
+    return $return_as_object ? $result : $result->isAllowed();
   }
 
 }

@@ -34,3 +34,15 @@ claim_access_rights.settings:
     notification_email:
       type: string
       label: 'Admin Notification Email'
+    allow_permanent_claims:
+      type: boolean
+      label: 'Allow users to request permanent access'
+    max_claim_days:
+      type: integer
+      label: 'Maximum access window in days (0 = unlimited)'
+    max_active_claims_per_user:
+      type: integer
+      label: 'Maximum active claims per user (0 = unlimited)'
+    user_extension_auto_approve:
+      type: boolean
+      label: 'Auto-approve extension requests from claimants'

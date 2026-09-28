@@ -11,8 +11,10 @@ use Drupal\user\RoleInterface;
  * Implements hook_install().
  */
 function claim_access_rights_install(): void {
-  // Automatically grant the claim access permission to authenticated users.
-  user_role_grant_permissions(RoleInterface::AUTHENTICATED_ID, ['claim access rights']);
+  // Deliberately no role gets 'claim access rights' here: with automatic
+  // approval, granting it to every authenticated user lets anyone take edit
+  // access to any claimable item. Site builders should assign it explicitly.
+  \Drupal::messenger()->addWarning(t('Claim Access Rights: assign the "Claim access rights on content" permission to the roles that may claim, and review the limits at /admin/config/people/claim-access-rights.'));
 }
 
 /**
@@ -132,4 +134,29 @@ function claim_access_rights_update_10001(): void {
     // Populate starts_at with created timestamp for existing rows.
     \Drupal::database()->query('UPDATE {claim_access_grants} SET starts_at = created WHERE starts_at = 0');
   }
+}
+
+/**
+ * Add abuse-protection settings, preserving existing behaviour on live sites.
+ *
+ * Existing sites keep permissive values so nothing changes silently; review
+ * them at /admin/config/people/claim-access-rights. Fresh installs default to
+ * restrictive values. Also fixed in this release, with no opt-out: revoked or
+ * replaced grants can no longer be reinstated by their holder.
+ */
+function claim_access_rights_update_10002(): string {
+  $config = \Drupal::configFactory()->getEditable('claim_access_rights.settings');
+  $defaults = [
+    'allow_permanent_claims' => TRUE,
+    'max_claim_days' => 0,
+    'max_active_claims_per_user' => 0,
+    'user_extension_auto_approve' => TRUE,
+  ];
+  foreach ($defaults as $key => $value) {
+    if ($config->get($key) === NULL) {
+      $config->set($key, $value);
+    }
+  }
+  $config->save();
+  return 'Added claim limit settings (permissive on existing sites); please review them.';
 }

@@ -64,14 +64,20 @@ final class ClaimUserExtensionRequestForm extends FormBase {
 
     $grant = $this->claimAccessManager->getGrant((int) $grant_id);
     if (!$grant) {
-      return AccessResult::forbidden()->cachePerUser();
+      return AccessResult::forbidden()->cachePerUser()->addCacheTags(['claim_access_grants']);
     }
 
-    if ((int) $account->id() === (int) $grant['uid'] && $account->hasPermission('claim access rights')) {
-      return AccessResult::allowed()->cachePerUser();
+    // Owners may only extend grants that are live or have lapsed. Revoked and
+    // replaced grants were ended on purpose and must not be self-reinstated.
+    $extendable = in_array($grant['status'], [
+      ClaimAccessManagerInterface::STATUS_ACTIVE,
+      ClaimAccessManagerInterface::STATUS_EXPIRED,
+    ], TRUE);
+    if ($extendable && (int) $account->id() === (int) $grant['uid'] && $account->hasPermission('claim access rights')) {
+      return AccessResult::allowed()->cachePerUser()->addCacheTags(['claim_access_grants']);
     }
 
-    return AccessResult::forbidden()->cachePerUser();
+    return AccessResult::forbidden()->cachePerUser()->addCacheTags(['claim_access_grants']);
   }
 
   /**

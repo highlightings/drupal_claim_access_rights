@@ -10,4 +10,8 @@ allowed_rights:
 default_expiry_days: 30
 expiry_type: days
 auto_approval_mode: eca
+allow_permanent_claims: false
+max_claim_days: 90
+max_active_claims_per_user: 5
+user_extension_auto_approve: false
 notification_email: ''

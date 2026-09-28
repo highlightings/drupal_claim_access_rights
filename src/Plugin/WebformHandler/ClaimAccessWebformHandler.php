@@ -92,7 +92,11 @@ final class ClaimAccessWebformHandler extends WebformHandlerBase implements Cont
       return;
     }
 
-    $entity = $this->entityTypeManager->getStorage($entity_type)->load($entity_id);
+    // The type comes from a client-controlled hidden field: never hand it to
+    // getStorage() unchecked.
+    $entity = $this->entityTypeManager->hasDefinition($entity_type)
+      ? $this->entityTypeManager->getStorage($entity_type)->load($entity_id)
+      : NULL;
     if (!$entity) {
       $form_state->setErrorByName('target_entity_id', (string) $this->t('The specified listing could not be found.'));
       return;
@@ -132,20 +136,42 @@ final class ClaimAccessWebformHandler extends WebformHandlerBase implements Cont
 
     if ($mode === 'immediate') {
       try {
+        // Defence in depth: this hook also runs for submissions that bypassed
+        // the form (API, imports), so re-check the window and the user's cap.
+        $starts_at = !empty($data['start_date']) ? strtotime((string) $data['start_date']) : $webform_submission->getCreatedTime();
+        $expires_at = !empty($data['no_end_date']) ? 0 : (!empty($data['end_date']) ? strtotime((string) $data['end_date'] . ' 23:59:59') : FALSE);
+        if ($starts_at === FALSE || $expires_at === FALSE) {
+          throw new \InvalidArgumentException('Invalid access dates.');
+        }
+        $error = $this->claimAccessManager->validateClaimWindow((int) $starts_at, (int) $expires_at)
+          ?? $this->claimAccessManager->validateUserClaimLimit($uid);
+        if ($error !== NULL) {
+          throw new \InvalidArgumentException($error);
+        }
+
         $this->claimAccessManager->grantAccess(
           $entity_type,
           $entity_id,
           $uid,
           $rights,
           null,
-          null,
+          (int) $expires_at,
           $notes,
-          (int) $webform_submission->id()
+          (int) $webform_submission->id(),
+          (int) $starts_at
         );
         $this->messenger->addStatus($this->t('Your claim has been immediately approved! You now have access rights to this listing.'));
       }
+      catch (\InvalidArgumentException $e) {
+        // These messages are safe, translated validation text or generic.
+        $this->messenger->addError($this->t('Your claim could not be approved. Please check the requested dates and rights.'));
+        \Drupal::logger('claim_access_rights')->warning('Immediate claim rejected: @msg', ['@msg' => $e->getMessage()]);
+      }
       catch (\Throwable $e) {
-        $this->messenger->addError($this->t('An error occurred granting access: @err', ['@err' => $e->getMessage()]));
+        // Never echo exception text to the visitor: it can carry SQL, internal
+        // paths or other users' reservation details.
+        $this->messenger->addError($this->t('Your claim could not be approved right now. It may conflict with an existing reservation.'));
+        \Drupal::logger('claim_access_rights')->error('Immediate claim failed: @msg', ['@msg' => $e->getMessage()]);
       }
     }
     elseif ($mode === 'eca') {

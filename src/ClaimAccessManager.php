@@ -10,9 +10,12 @@ use Drupal\Core\Cache\CacheTagsInvalidatorInterface;
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Database\Connection;
 use Drupal\Core\Entity\EntityInterface;
+use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Logger\LoggerChannelFactoryInterface;
+use Drupal\Core\Lock\LockBackendInterface;
 use Drupal\Core\Logger\LoggerChannelInterface;
 use Drupal\Core\Session\AccountInterface;
+use Drupal\Core\StringTranslation\TranslatableMarkup;
 
 /**
  * Service managing claim access grants and permissions across all content entities.
@@ -21,12 +24,19 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
 
   private readonly LoggerChannelInterface $logger;
 
+  /**
+   * Per-request index of a user's active grants: [uid => ["type:id" => row]].
+   */
+  private array $userGrantIndex = [];
+
   public function __construct(
     private readonly Connection $database,
     private readonly ConfigFactoryInterface $configFactory,
     private readonly TimeInterface $time,
     private readonly CacheTagsInvalidatorInterface $cacheTagsInvalidator,
     LoggerChannelFactoryInterface $loggerFactory,
+    private readonly LockBackendInterface $lock,
+    private readonly EntityTypeManagerInterface $entityTypeManager,
   ) {
     $this->logger = $loggerFactory->get('claim_access_rights');
   }
@@ -67,6 +77,9 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
   ): int {
     $config = $this->configFactory->get('claim_access_rights.settings');
     $mode = $mode ?: (string) $config->get('claim_mode') ?: self::MODE_EXCLUSIVE;
+    if (!in_array($mode, [self::MODE_EXCLUSIVE, self::MODE_REPLACE, self::MODE_APPEND], TRUE)) {
+      throw new \InvalidArgumentException('Unknown claim mode.');
+    }
     $now = $this->time->getRequestTime();
     $starts_at = ($starts_at !== null && $starts_at > 0) ? $starts_at : $now;
 
@@ -82,29 +95,36 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       }
     }
 
-    $rights_str = implode(',', array_unique(array_filter($rights)));
-    if (empty($rights_str)) {
-      $rights_str = self::RIGHT_VIEW . ',' . self::RIGHT_EDIT;
+    // Never trust the caller: validate target, user, rights and window.
+    if ($uid <= 0 || $entity_id <= 0) {
+      throw new \InvalidArgumentException('A valid user and entity ID are required.');
     }
+    $entity = $this->entityTypeManager->hasDefinition($entity_type)
+      ? $this->entityTypeManager->getStorage($entity_type)->load($entity_id)
+      : NULL;
+    if (!$entity || !$this->isEntityTypeBundleEnabled($entity_type, $entity->bundle())) {
+      throw new \InvalidArgumentException('The target entity cannot be claimed.');
+    }
+    if ($expires_at > 0 && $expires_at < $starts_at) {
+      throw new \InvalidArgumentException('The end of the access window is before its start.');
+    }
+    $allowed_rights = $this->getAllowedRights();
+    $rights = array_values(array_unique(array_filter($rights)));
+    if (empty($rights)) {
+      $rights = $allowed_rights;
+    }
+    if (array_diff($rights, $allowed_rights)) {
+      throw new \InvalidArgumentException('One or more requested rights are not claimable.');
+    }
+    $rights_str = implode(',', $rights);
 
-    // Handle claim mode rules.
-    switch ($mode) {
-      case self::MODE_EXCLUSIVE:
-        $conflict = $this->getOverlappingExclusiveGrant($entity_type, $entity_id, $starts_at, $expires_at);
-        if ($conflict && (int) $conflict['uid'] !== $uid) {
-          $conf_start = date('Y-m-d', (int) ($conflict['starts_at'] ?: $conflict['created']));
-          $conf_end = (int) $conflict['expires_at'] === 0 ? 'Indefinite' : date('Y-m-d', (int) $conflict['expires_at']);
-          throw new \RuntimeException(sprintf(
-            'Exclusive access is already reserved on %s ID %d for overlapping duration (%s to %s).',
-            $entity_type,
-            $entity_id,
-            $conf_start,
-            $conf_end
-          ));
-        }
-
-        // If the same user has an active grant on this entity, update it.
-        $active_user_grant = $this->database->select('claim_access_grants', 'c')
+    // The check-then-write sequences below must be atomic per entity, or two
+    // simultaneous claims can both pass the exclusivity check.
+    $grant_id = $this->withEntityLock($entity_type, $entity_id, function () use ($entity_type, $entity_id, $uid, $rights_str, $mode, $now, $starts_at, $expires_at, $notes, $submission_id): int {
+      $transaction = $this->database->startTransaction();
+      try {
+        // The user's own active grant (exclusive/append) is refreshed in place.
+        $existing = $mode === self::MODE_REPLACE ? FALSE : $this->database->select('claim_access_grants', 'c')
           ->fields('c', ['id'])
           ->condition('entity_type', $entity_type)
           ->condition('entity_id', $entity_id)
@@ -113,79 +133,29 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
           ->execute()
           ->fetchField();
 
-        if ($active_user_grant) {
-          $existing_id = (int) $active_user_grant;
+        if ($mode === self::MODE_EXCLUSIVE) {
+          // Exclude the user's own grant so it cannot mask someone else's
+          // overlapping reservation.
+          $conflict = $this->getOverlappingExclusiveGrant($entity_type, $entity_id, $starts_at, $expires_at, $existing ? (int) $existing : NULL);
+          if ($conflict) {
+            throw new \RuntimeException(sprintf(
+              'Exclusive access is already reserved on %s ID %d for an overlapping duration.',
+              $entity_type,
+              $entity_id
+            ));
+          }
+        }
+        elseif ($mode === self::MODE_REPLACE) {
           $this->database->update('claim_access_grants')
-            ->fields([
-              'rights' => $rights_str,
-              'starts_at' => $starts_at,
-              'expires_at' => $expires_at,
-              'mode' => $mode,
-              'notes' => $notes,
-              'submission_id' => $submission_id ?? 0,
-            ])
-            ->condition('id', $existing_id)
+            ->fields(['status' => self::STATUS_REPLACED])
+            ->condition('entity_type', $entity_type)
+            ->condition('entity_id', $entity_id)
+            ->condition('status', self::STATUS_ACTIVE)
             ->execute();
-          $grant_id = $existing_id;
-          break;
         }
-
-        $grant_id = (int) $this->database->insert('claim_access_grants')
-          ->fields([
-            'entity_type' => $entity_type,
-            'entity_id' => $entity_id,
-            'uid' => $uid,
-            'rights' => $rights_str,
-            'mode' => $mode,
-            'status' => self::STATUS_ACTIVE,
-            'created' => $now,
-            'starts_at' => $starts_at,
-            'expires_at' => $expires_at,
-            'submission_id' => $submission_id ?? 0,
-            'notes' => $notes,
-          ])
-          ->execute();
-        break;
-
-      case self::MODE_REPLACE:
-        // Revoke / replace previous active grants on this entity.
-        $this->database->update('claim_access_grants')
-          ->fields(['status' => self::STATUS_REPLACED])
-          ->condition('entity_type', $entity_type)
-          ->condition('entity_id', $entity_id)
-          ->condition('status', self::STATUS_ACTIVE)
-          ->execute();
-
-        $grant_id = (int) $this->database->insert('claim_access_grants')
-          ->fields([
-            'entity_type' => $entity_type,
-            'entity_id' => $entity_id,
-            'uid' => $uid,
-            'rights' => $rights_str,
-            'mode' => $mode,
-            'status' => self::STATUS_ACTIVE,
-            'created' => $now,
-            'starts_at' => $starts_at,
-            'expires_at' => $expires_at,
-            'submission_id' => $submission_id ?? 0,
-            'notes' => $notes,
-          ])
-          ->execute();
-        break;
-
-      case self::MODE_APPEND:
-      default:
-        // Check if this specific user already has an active grant.
-        $existing = $this->database->select('claim_access_grants', 'c')
-          ->fields('c', ['id'])
-          ->condition('entity_type', $entity_type)
-          ->condition('entity_id', $entity_id)
-          ->condition('uid', $uid)
-          ->condition('status', self::STATUS_ACTIVE)
-          ->execute()
-          ->fetchField();
 
         if ($existing) {
+          $grant_id = (int) $existing;
           $this->database->update('claim_access_grants')
             ->fields([
               'rights' => $rights_str,
@@ -195,9 +165,8 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
               'notes' => $notes,
               'submission_id' => $submission_id ?? 0,
             ])
-            ->condition('id', (int) $existing)
+            ->condition('id', $grant_id)
             ->execute();
-          $grant_id = (int) $existing;
         }
         else {
           $grant_id = (int) $this->database->insert('claim_access_grants')
@@ -216,8 +185,13 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
             ])
             ->execute();
         }
-        break;
-    }
+      }
+      catch (\Throwable $e) {
+        $transaction->rollBack();
+        throw $e;
+      }
+      return $grant_id;
+    });
 
     $this->logger->notice('Granted claim access ID @id to UID @uid for @type @eid (Mode: @mode, Rights: @rights).', [
       '@id' => $grant_id,
@@ -228,11 +202,7 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       '@rights' => $rights_str,
     ]);
 
-    // Invalidate entity cache and claims cache tags.
-    $this->cacheTagsInvalidator->invalidateTags([
-      $entity_type . ':' . $entity_id,
-      'claim_access_grants',
-    ]);
+    $this->invalidateGrantCaches($entity_type, $entity_id);
 
     return $grant_id;
   }
@@ -296,45 +266,14 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       return FALSE;
     }
 
-    // Check if the entity type and bundle is enabled for claiming.
     if (!$this->isEntityTypeBundleEnabled($entity->getEntityTypeId(), $entity->bundle())) {
       return FALSE;
     }
 
-    $record = $this->database->select('claim_access_grants', 'c')
-      ->fields('c')
-      ->condition('entity_type', $entity->getEntityTypeId())
-      ->condition('entity_id', (int) $entity->id())
-      ->condition('uid', (int) $account->id())
-      ->condition('status', self::STATUS_ACTIVE)
-      ->execute()
-      ->fetchAssoc();
-
-    if (!$record) {
-      return FALSE;
-    }
-
-    $starts_at = (int) ($record['starts_at'] ?: $record['created']);
-    $expires_at = (int) $record['expires_at'];
-    $now = $this->time->getRequestTime();
-
-    // Check if access period has started yet.
-    if ($starts_at > $now) {
-      return FALSE;
-    }
-
-    // Check expiration.
-    if ($expires_at > 0 && $expires_at <= $now) {
-      // Mark as expired.
-      $this->database->update('claim_access_grants')
-        ->fields(['status' => self::STATUS_EXPIRED])
-        ->condition('id', (int) $record['id'])
-        ->execute();
-
-      $this->cacheTagsInvalidator->invalidateTags([
-        $entity->getEntityTypeId() . ':' . $entity->id(),
-        'claim_access_grants',
-      ]);
+    // Read-only: expiry is evaluated by comparing timestamps. Status changes
+    // are left to cron (purgeExpiredGrants) so that page views never write.
+    $record = $this->getUserGrantFor($entity->getEntityTypeId(), (int) $entity->id(), (int) $account->id());
+    if (!$record || !$this->isGrantInEffect($record)) {
       return FALSE;
     }
 
@@ -345,8 +284,7 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       default => $op,
     };
 
-    $rights = explode(',', (string) $record['rights']);
-    return in_array($required_right, $rights, TRUE);
+    return in_array($required_right, explode(',', (string) $record['rights']), TRUE);
   }
 
   /**
@@ -430,23 +368,10 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       ->fetchAll(\PDO::FETCH_ASSOC);
 
     $now = $this->time->getRequestTime();
-    $active = [];
-
-    foreach ($records as $record) {
+    return array_values(array_filter($records, static function (array $record) use ($now): bool {
       $expires_at = (int) $record['expires_at'];
-      if ($expires_at > 0 && $expires_at <= $now) {
-        // Expired grant found: update status.
-        $this->database->update('claim_access_grants')
-          ->fields(['status' => self::STATUS_EXPIRED])
-          ->condition('id', (int) $record['id'])
-          ->execute();
-      }
-      else {
-        $active[] = $record;
-      }
-    }
-
-    return $active;
+      return $expires_at === 0 || $expires_at > $now;
+    }));
   }
 
   /**
@@ -488,10 +413,7 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       ->condition('id', $grant_id)
       ->execute();
 
-    $this->cacheTagsInvalidator->invalidateTags([
-      $grant['entity_type'] . ':' . $grant['entity_id'],
-      'claim_access_grants',
-    ]);
+    $this->invalidateGrantCaches((string) $grant['entity_type'], (int) $grant['entity_id']);
 
     $this->logger->notice('Revoked claim access grant @id for user @uid on @type @eid.', [
       '@id' => $grant_id,
@@ -506,34 +428,75 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
   /**
    * {@inheritdoc}
    */
-  public function extendGrant(int $grant_id, int $additional_days = 30): bool {
+  public function extendGrant(int $grant_id, int $additional_days = 30, bool $reinstate = FALSE): bool {
     $grant = $this->getGrant($grant_id);
-    if (!$grant) {
+    if (!$grant || $additional_days < 1) {
       return FALSE;
     }
 
-    $now = $this->time->getRequestTime();
-    $current_expiry = (int) $grant['expires_at'];
-    $base_time = ($current_expiry > $now) ? $current_expiry : $now;
-    $new_expiry = $base_time + ($additional_days * 86400);
+    // Grants that were revoked or replaced are only ever brought back by an
+    // explicit administrator action, never by a plain extension.
+    $ended = in_array($grant['status'], [self::STATUS_REVOKED, self::STATUS_REPLACED], TRUE);
+    if ($ended && !$reinstate) {
+      return FALSE;
+    }
 
-    $this->database->update('claim_access_grants')
-      ->fields([
-        'expires_at' => $new_expiry,
-        'status' => self::STATUS_ACTIVE,
-      ])
-      ->condition('id', $grant_id)
-      ->execute();
+    $entity_type = (string) $grant['entity_type'];
+    $entity_id = (int) $grant['entity_id'];
 
-    $this->cacheTagsInvalidator->invalidateTags([
-      $grant['entity_type'] . ':' . $grant['entity_id'],
-      'claim_access_grants',
-    ]);
+    $extended = $this->withEntityLock($entity_type, $entity_id, function () use ($grant_id, $additional_days, $reinstate): bool {
+      // Re-read under the lock: the grant may have been revoked or replaced
+      // while this request was waiting.
+      $grant = $this->getGrant($grant_id);
+      if (!$grant || (in_array($grant['status'], [self::STATUS_REVOKED, self::STATUS_REPLACED], TRUE) && !$reinstate)) {
+        return FALSE;
+      }
+      $now = $this->time->getRequestTime();
+      $current_expiry = (int) $grant['expires_at'];
+      $base_time = ($current_expiry > $now) ? $current_expiry : $now;
+      $new_expiry = $base_time + ($additional_days * 86400);
+      $starts_at = (int) ($grant['starts_at'] ?: $grant['created']);
 
-    $this->logger->notice('Extended grant @id by @days days to @expiry.', [
+      if ((int) $grant['expires_at'] === 0 && $grant['status'] === self::STATUS_ACTIVE) {
+        // Already permanent: nothing to extend, and never shorten it.
+        return FALSE;
+      }
+
+      // Bringing an inactive grant back must not create a second holder or an
+      // overlapping exclusive reservation.
+      if ($grant['status'] !== self::STATUS_ACTIVE && $grant['mode'] !== self::MODE_APPEND) {
+        foreach ($this->getActiveGrants((string) $grant['entity_type'], (int) $grant['entity_id']) as $other) {
+          if ((int) $other['id'] !== $grant_id) {
+            return FALSE;
+          }
+        }
+      }
+      if ($grant['mode'] === self::MODE_EXCLUSIVE) {
+        $conflict = $this->getOverlappingExclusiveGrant((string) $grant['entity_type'], (int) $grant['entity_id'], $starts_at, $new_expiry, $grant_id);
+        if ($conflict && (int) $conflict['uid'] !== (int) $grant['uid']) {
+          return FALSE;
+        }
+      }
+
+      $this->database->update('claim_access_grants')
+        ->fields([
+          'expires_at' => $new_expiry,
+          'status' => self::STATUS_ACTIVE,
+        ])
+        ->condition('id', $grant_id)
+        ->execute();
+      return TRUE;
+    });
+
+    if (!$extended) {
+      return FALSE;
+    }
+
+    $this->invalidateGrantCaches($entity_type, $entity_id);
+
+    $this->logger->notice('Extended grant @id by @days days.', [
       '@id' => $grant_id,
       '@days' => $additional_days,
-      '@expiry' => date('Y-m-d H:i:s', $new_expiry),
     ]);
 
     return TRUE;
@@ -544,22 +507,36 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
    */
   public function requestExtension(int $grant_id, int $additional_days = 30, ?string $reason = null): bool {
     $grant = $this->getGrant($grant_id);
-    if (!$grant) {
+    // Only live or lapsed grants can be extended by their holder. Revoked and
+    // replaced grants were ended deliberately and stay ended.
+    if (!$grant || !in_array($grant['status'], [self::STATUS_ACTIVE, self::STATUS_EXPIRED], TRUE)) {
       return FALSE;
     }
+    $additional_days = max(1, min(90, $additional_days));
 
     $config = $this->configFactory->get('claim_access_rights.settings');
-    $auto_approve = (bool) ($config->get('user_extension_auto_approve') ?? TRUE);
+    $auto_approve = (bool) $config->get('user_extension_auto_approve');
+    $reason = $reason !== null ? mb_substr(trim($reason), 0, 1000) : '';
 
-    $now_date = date('Y-m-d H:i');
+    $now = $this->time->getRequestTime();
+    $now_date = date('Y-m-d H:i', $now);
     $existing_notes = (string) ($grant['notes'] ?? '');
 
     if ($auto_approve) {
-      $this->extendGrant($grant_id, $additional_days);
+      // Total lifetime of a self-service grant stays within max_claim_days.
+      $max_days = (int) $config->get('max_claim_days');
+      $starts_at = (int) ($grant['starts_at'] ?: $grant['created']);
+      $expiry = (int) $grant['expires_at'];
+      $new_expiry = (($expiry > $now) ? $expiry : $now) + ($additional_days * 86400);
+      if ($max_days > 0 && $new_expiry > $starts_at + ($max_days * 86400)) {
+        return FALSE;
+      }
+      if (!$this->extendGrant($grant_id, $additional_days)) {
+        return FALSE;
+      }
       $note_line = "[{$now_date}] Auto-approved extension: +{$additional_days} days." . ($reason ? " Reason: {$reason}" : '');
-      $updated_notes = trim($existing_notes . "\n" . $note_line);
       $this->database->update('claim_access_grants')
-        ->fields(['notes' => $updated_notes])
+        ->fields(['notes' => trim($existing_notes . "\n" . $note_line)])
         ->condition('id', $grant_id)
         ->execute();
 
@@ -570,21 +547,15 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       return TRUE;
     }
 
-    // Manual approval mode: mark as pending extension review.
+    // Manual approval: record the request without touching the status, so the
+    // claimant keeps the access they still legitimately hold while waiting.
     $note_line = "[{$now_date}] Extension requested: +{$additional_days} days." . ($reason ? " Reason: {$reason}" : '');
-    $updated_notes = trim($existing_notes . "\n" . $note_line);
     $this->database->update('claim_access_grants')
-      ->fields([
-        'status' => self::STATUS_PENDING,
-        'notes' => $updated_notes,
-      ])
+      ->fields(['notes' => trim($existing_notes . "\n" . $note_line)])
       ->condition('id', $grant_id)
       ->execute();
 
-    $this->cacheTagsInvalidator->invalidateTags([
-      $grant['entity_type'] . ':' . $grant['entity_id'],
-      'claim_access_grants',
-    ]);
+    $this->invalidateGrantCaches((string) $grant['entity_type'], (int) $grant['entity_id']);
 
     $this->logger->notice('User extension requested for grant @id (+@days days, pending review).', [
       '@id' => $grant_id,
@@ -607,10 +578,7 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       ->condition('id', $grant_id)
       ->execute();
 
-    $this->cacheTagsInvalidator->invalidateTags([
-      $grant['entity_type'] . ':' . $grant['entity_id'],
-      'claim_access_grants',
-    ]);
+    $this->invalidateGrantCaches((string) $grant['entity_type'], (int) $grant['entity_id']);
 
     return TRUE;
   }
@@ -620,15 +588,23 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
    */
   public function getStatistics(): array {
     $now = $this->time->getRequestTime();
-    $seven_days_later = $now + (7 * 86400);
+    $soon = $now + (7 * 86400);
 
-    $grants = $this->database->select('claim_access_grants', 'c')
-      ->fields('c')
-      ->execute()
-      ->fetchAll(\PDO::FETCH_ASSOC);
+    $query = $this->database->select('claim_access_grants', 'c');
+    $query->addField('c', 'status');
+    $query->addField('c', 'entity_type');
+    $query->addExpression('CASE WHEN c.expires_at = 0 THEN 1 ELSE 0 END', 'no_expiry');
+    $query->addExpression('CASE WHEN c.expires_at > 0 AND c.expires_at <= :now_a THEN 1 ELSE 0 END', 'is_past', [':now_a' => $now]);
+    $query->addExpression('CASE WHEN c.expires_at > :now_b AND c.expires_at <= :soon THEN 1 ELSE 0 END', 'is_soon', [':now_b' => $now, ':soon' => $soon]);
+    $query->addExpression('COUNT(*)', 'cnt');
+    $query->groupBy('c.status');
+    $query->groupBy('c.entity_type');
+    $query->groupBy('no_expiry');
+    $query->groupBy('is_past');
+    $query->groupBy('is_soon');
 
     $stats = [
-      'total' => count($grants),
+      'total' => 0,
       'active' => 0,
       'no_expiry' => 0,
       'expiring_soon' => 0,
@@ -638,35 +614,38 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       'by_entity_type' => [],
     ];
 
-    foreach ($grants as $g) {
-      $type = $g['entity_type'];
-      $stats['by_entity_type'][$type] = ($stats['by_entity_type'][$type] ?? 0) + 1;
+    foreach ($query->execute()->fetchAll(\PDO::FETCH_ASSOC) as $row) {
+      $count = (int) $row['cnt'];
+      $stats['total'] += $count;
+      $stats['by_entity_type'][$row['entity_type']] = ($stats['by_entity_type'][$row['entity_type']] ?? 0) + $count;
 
-      $status = $g['status'];
-      $expires_at = (int) $g['expires_at'];
+      switch ($row['status']) {
+        case self::STATUS_ACTIVE:
+          if ((int) $row['is_past'] === 1) {
+            $stats['expired'] += $count;
+          }
+          else {
+            $stats['active'] += $count;
+            if ((int) $row['no_expiry'] === 1) {
+              $stats['no_expiry'] += $count;
+            }
+            elseif ((int) $row['is_soon'] === 1) {
+              $stats['expiring_soon'] += $count;
+            }
+          }
+          break;
 
-      if ($status === self::STATUS_ACTIVE) {
-        if ($expires_at > 0 && $expires_at <= $now) {
-          $stats['expired']++;
-        }
-        else {
-          $stats['active']++;
-          if ($expires_at === 0) {
-            $stats['no_expiry']++;
-          }
-          elseif ($expires_at > $now && $expires_at <= $seven_days_later) {
-            $stats['expiring_soon']++;
-          }
-        }
-      }
-      elseif ($status === self::STATUS_EXPIRED) {
-        $stats['expired']++;
-      }
-      elseif ($status === self::STATUS_REPLACED) {
-        $stats['replaced']++;
-      }
-      elseif ($status === self::STATUS_REVOKED) {
-        $stats['revoked']++;
+        case self::STATUS_EXPIRED:
+          $stats['expired'] += $count;
+          break;
+
+        case self::STATUS_REPLACED:
+          $stats['replaced'] += $count;
+          break;
+
+        case self::STATUS_REVOKED:
+          $stats['revoked'] += $count;
+          break;
       }
     }
 
@@ -678,19 +657,200 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
    */
   public function purgeExpiredGrants(): int {
     $now = $this->time->getRequestTime();
-    $updated = $this->database->update('claim_access_grants')
-      ->fields(['status' => self::STATUS_EXPIRED])
+
+    $rows = $this->database->select('claim_access_grants', 'c')
+      ->fields('c', ['id', 'entity_type', 'entity_id'])
       ->condition('status', self::STATUS_ACTIVE)
       ->condition('expires_at', 0, '>')
       ->condition('expires_at', $now, '<=')
-      ->execute();
+      ->range(0, 1000)
+      ->execute()
+      ->fetchAll(\PDO::FETCH_ASSOC);
 
-    if ($updated > 0) {
-      $this->cacheTagsInvalidator->invalidateTags(['claim_access_grants']);
-      $this->logger->info('Purged @count expired claim access grants.', ['@count' => $updated]);
+    if (!$rows) {
+      return 0;
     }
 
-    return (int) $updated;
+    $updated = (int) $this->database->update('claim_access_grants')
+      ->fields(['status' => self::STATUS_EXPIRED])
+      ->condition('id', array_column($rows, 'id'), 'IN')
+      ->condition('status', self::STATUS_ACTIVE)
+      ->execute();
+
+    // Access results are tagged per entity, so invalidate exactly those.
+    foreach ($rows as $row) {
+      $this->invalidateGrantCaches((string) $row['entity_type'], (int) $row['entity_id']);
+    }
+    $this->logger->info('Purged @count expired claim access grants.', ['@count' => $updated]);
+
+    return $updated;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function validateClaimWindow(int $starts_at, int $expires_at): ?string {
+    $config = $this->configFactory->get('claim_access_rights.settings');
+    $now = $this->time->getRequestTime();
+    $max_days = (int) $config->get('max_claim_days');
+
+    if ($expires_at > 0 && $expires_at < $starts_at) {
+      return (string) new TranslatableMarkup('Access end date must be on or after the start date.');
+    }
+    if ($expires_at === 0 && !$config->get('allow_permanent_claims')) {
+      return (string) new TranslatableMarkup('Permanent access cannot be requested. Please choose an end date.');
+    }
+    if ($max_days > 0) {
+      if ($starts_at > $now + ($max_days * 86400)) {
+        return (string) new TranslatableMarkup('Access cannot be reserved more than @days days in advance.', ['@days' => $max_days]);
+      }
+      if ($expires_at > 0 && ($expires_at - $starts_at) > ($max_days * 86400)) {
+        return (string) new TranslatableMarkup('Access can be requested for at most @days days at a time.', ['@days' => $max_days]);
+      }
+    }
+    return NULL;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function validateUserClaimLimit(int $uid): ?string {
+    $max = (int) $this->configFactory->get('claim_access_rights.settings')->get('max_active_claims_per_user');
+    if ($max <= 0) {
+      return NULL;
+    }
+    $now = $this->time->getRequestTime();
+    $query = $this->database->select('claim_access_grants', 'c')
+      ->condition('uid', $uid)
+      ->condition('status', self::STATUS_ACTIVE);
+    $query->condition($query->orConditionGroup()
+      ->condition('expires_at', 0)
+      ->condition('expires_at', $now, '>'));
+    if ((int) $query->countQuery()->execute()->fetchField() >= $max) {
+      return (string) new TranslatableMarkup('You have reached the maximum number of active claims (@max).', ['@max' => $max]);
+    }
+    return NULL;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function getAccessCacheMetadata(EntityInterface $entity, AccountInterface $account): array {
+    $max_age = Cache::PERMANENT;
+    if ($account->isAuthenticated() && $entity->id()) {
+      $record = $this->getUserGrantFor($entity->getEntityTypeId(), (int) $entity->id(), (int) $account->id());
+      if ($record) {
+        $max_age = $this->getGrantsMaxAge([$record]);
+      }
+    }
+    return [
+      'tags' => [
+        'config:claim_access_rights.settings',
+        self::entityTag($entity->getEntityTypeId(), $entity->id() ?? 0),
+      ],
+      'max_age' => $max_age,
+    ];
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function getGrantsMaxAge(array $grants): int {
+    $now = $this->time->getRequestTime();
+    $max_age = Cache::PERMANENT;
+    foreach ($grants as $grant) {
+      foreach ([(int) ($grant['starts_at'] ?: $grant['created']), (int) $grant['expires_at']] as $boundary) {
+        if ($boundary > $now) {
+          $delta = $boundary - $now;
+          $max_age = ($max_age === Cache::PERMANENT) ? $delta : min($max_age, $delta);
+        }
+      }
+    }
+    return $max_age;
+  }
+
+  /**
+   * Per-entity cache tag carried by every access result and claim banner.
+   */
+  public static function entityTag(string $entity_type, int|string $entity_id): string {
+    return 'claim_access_grants:' . $entity_type . ':' . $entity_id;
+  }
+
+  /**
+   * Returns the rights that may be claimed, from configuration.
+   *
+   * @return string[]
+   */
+  private function getAllowedRights(): array {
+    $known = [self::RIGHT_VIEW, self::RIGHT_EDIT];
+    $configured = (array) $this->configFactory->get('claim_access_rights.settings')->get('allowed_rights');
+    $allowed = array_values(array_intersect($known, $configured));
+    return $allowed ?: $known;
+  }
+
+  /**
+   * Returns the user's active grant for an entity, using a per-request index.
+   */
+  private function getUserGrantFor(string $entity_type, int $entity_id, int $uid): ?array {
+    if (!isset($this->userGrantIndex[$uid])) {
+      $index = [];
+      $rows = $this->database->select('claim_access_grants', 'c')
+        ->fields('c')
+        ->condition('uid', $uid)
+        ->condition('status', self::STATUS_ACTIVE)
+        ->execute()
+        ->fetchAll(\PDO::FETCH_ASSOC);
+      foreach ($rows as $row) {
+        $key = $row['entity_type'] . ':' . $row['entity_id'];
+        // Prefer a grant that is currently in effect if there are several.
+        if (!isset($index[$key]) || $this->isGrantInEffect($row)) {
+          $index[$key] = $row;
+        }
+      }
+      $this->userGrantIndex[$uid] = $index;
+    }
+    return $this->userGrantIndex[$uid][$entity_type . ':' . $entity_id] ?? NULL;
+  }
+
+  /**
+   * Whether a grant's time window covers the current request time.
+   */
+  private function isGrantInEffect(array $record): bool {
+    $now = $this->time->getRequestTime();
+    $starts_at = (int) ($record['starts_at'] ?: $record['created']);
+    $expires_at = (int) $record['expires_at'];
+    return $starts_at <= $now && ($expires_at === 0 || $expires_at > $now);
+  }
+
+  /**
+   * Runs a callback while holding a per-entity lock.
+   */
+  private function withEntityLock(string $entity_type, int $entity_id, callable $callback): mixed {
+    $name = 'claim_access_rights:' . $entity_type . ':' . $entity_id;
+    if (!$this->lock->acquire($name, 15.0)) {
+      $this->lock->wait($name, 5);
+      if (!$this->lock->acquire($name, 15.0)) {
+        throw new \RuntimeException('Could not obtain a lock for this item. Please try again.');
+      }
+    }
+    try {
+      return $callback();
+    }
+    finally {
+      $this->lock->release($name);
+    }
+  }
+
+  /**
+   * Clears the per-request index and invalidates all tags tied to a target.
+   */
+  private function invalidateGrantCaches(string $entity_type, int|string $entity_id): void {
+    $this->userGrantIndex = [];
+    $this->cacheTagsInvalidator->invalidateTags([
+      $entity_type . ':' . $entity_id,
+      'claim_access_grants',
+      self::entityTag($entity_type, $entity_id),
+    ]);
   }
 
 }

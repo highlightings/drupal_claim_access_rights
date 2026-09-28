@@ -9,6 +9,7 @@ declare(strict_types=1);
 
 use Drupal\Core\Access\AccessResult;
 use Drupal\Core\Access\AccessResultInterface;
+use Drupal\claim_access_rights\ClaimAccessManager;
 use Drupal\Core\Entity\Display\EntityViewDisplayInterface;
 use Drupal\Core\Entity\EntityInterface;
 use Drupal\Core\Session\AccountInterface;
@@ -23,15 +24,27 @@ function claim_access_rights_entity_access(EntityInterface $entity, string $oper
   /** @var \Drupal\claim_access_rights\ClaimAccessManagerInterface $manager */
   $manager = \Drupal::service('claim_access_rights.manager');
 
-  if ($manager->hasAccess($entity, $account, $operation)) {
-    return AccessResult::allowed()
-      ->cachePerUser()
-      ->addCacheableDependency($entity);
+  // Keep the common case cheap and cache-friendly: anonymous users and
+  // entities that are not claimable never depend on per-user grants.
+  if ($account->isAnonymous() || !$entity->id()
+    || !$manager->isEntityTypeBundleEnabled($entity->getEntityTypeId(), $entity->bundle())) {
+    return AccessResult::neutral()
+      ->addCacheContexts(['user.roles:anonymous'])
+      ->addCacheTags(['config:claim_access_rights.settings']);
   }
 
-  return AccessResult::neutral()
+  $result = $manager->hasAccess($entity, $account, $operation)
+    ? AccessResult::allowed()
+    : AccessResult::neutral();
+
+  // Grants are time-based: the max-age stops a cached result from outliving a
+  // start or expiry boundary, and the per-entity tag covers every mutation.
+  $metadata = $manager->getAccessCacheMetadata($entity, $account);
+  return $result
     ->cachePerUser()
-    ->addCacheableDependency($entity);
+    ->addCacheableDependency($entity)
+    ->addCacheTags($metadata['tags'])
+    ->setCacheMaxAge($metadata['max_age']);
 }
 
 /**
@@ -63,7 +76,7 @@ function claim_access_rights_entity_view(array &$build, EntityInterface $entity,
   /** @var \Drupal\claim_access_rights\ClaimAccessManagerInterface $manager */
   $manager = \Drupal::service('claim_access_rights.manager');
 
-  if (!method_exists($manager, 'isEntityTypeBundleEnabled') || !$manager->isEntityTypeBundleEnabled($entity_type_id, $entity->bundle())) {
+  if (!$manager->isEntityTypeBundleEnabled($entity_type_id, $entity->bundle())) {
     return;
   }
 
@@ -80,6 +93,16 @@ function claim_access_rights_entity_view(array &$build, EntityInterface $entity,
       'style' => 'margin: 20px 0; padding: 16px; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc;',
     ],
     '#weight' => 50,
+    // The banner depends on the viewer and on every grant on this entity, and
+    // changes when any of them starts or ends.
+    '#cache' => [
+      'contexts' => ['user'],
+      'tags' => [
+        'config:claim_access_rights.settings',
+        ClaimAccessManager::entityTag($entity_type_id, (string) $entity->id()),
+      ],
+      'max-age' => $manager->getGrantsMaxAge($info['active_grants'] ?? []),
+    ],
   ];
 
   if (!empty($info['user_is_claimant'])) {
@@ -198,14 +221,33 @@ function claim_access_rights_claim_listing_form_validate(array &$form, \Drupal\C
   $start_date_val = $form_state->getValue('start_date');
   $no_end_date = (bool) $form_state->getValue('no_end_date');
   $end_date_val = $form_state->getValue('end_date');
-
   $now = \Drupal::time()->getRequestTime();
-  $starts_at = !empty($start_date_val) ? strtotime((string) $start_date_val) : $now;
-  $expires_at = $no_end_date ? 0 : (!empty($end_date_val) ? strtotime((string) $end_date_val . ' 23:59:59') : 0);
 
-  // Validate end date is on or after start date if not indefinite.
-  if (!$no_end_date && $expires_at > 0 && $expires_at < $starts_at) {
-    $form_state->setErrorByName('end_date', t('Access end date must be on or after the start date.'));
+  $starts_at = !empty($start_date_val) ? strtotime((string) $start_date_val) : $now;
+  if ($starts_at === FALSE) {
+    $form_state->setErrorByName('start_date', t('Please enter a valid start date.'));
+    return;
+  }
+  if ($no_end_date) {
+    $expires_at = 0;
+  }
+  elseif (!empty($end_date_val)) {
+    $expires_at = strtotime((string) $end_date_val . ' 23:59:59');
+    if ($expires_at === FALSE) {
+      $form_state->setErrorByName('end_date', t('Please enter a valid end date.'));
+      return;
+    }
+  }
+  else {
+    $form_state->setErrorByName('end_date', t('Please choose an end date or request permanent access.'));
+    return;
+  }
+
+  // Window limits (permanent claims, maximum length/advance) and per-user cap.
+  $error = $manager->validateClaimWindow($starts_at, $expires_at)
+    ?? $manager->validateUserClaimLimit((int) \Drupal::currentUser()->id());
+  if ($error !== NULL) {
+    $form_state->setErrorByName('end_date', $error);
     return;
   }
 

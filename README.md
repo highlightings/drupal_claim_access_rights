@@ -102,7 +102,8 @@ The module requires the following core and contributed modules:
    drush cache:rebuild
    ```
 
-Upon installation, authenticated users are automatically granted the `claim access rights` permission.
+Installation does **not** grant `claim access rights` to any role. Assign it explicitly to the roles that may claim.
+With automatic approval, granting it to every authenticated user would let anyone take edit access to any claimable item.
 
 ---
 
@@ -116,7 +117,8 @@ Navigate to **Administration > Configuration > People > Claim Access Rights** (`
    - Choose between **Exclusive**, **Replace**, or **Append**.
 3. **Default Access Expiry**:
    - Specify the default duration in days (e.g. `30` days, or set to `0` for indefinite access by default).
-4. **Auto-Approval**:
+4. **Abuse protection & limits**: permanent claims (off by default), maximum window in days, maximum active claims per user, and whether claimant extension requests are auto-approved (off by default). Fresh installs default to restrictive values; `hook_update_10002` keeps permissive values on existing sites so nothing changes silently.
+5. **Auto-Approval**:
    - Check **Auto-approve claims immediately** to bypass manual review and grant access instantly upon form submission, or leave unchecked to process approvals through ECA workflows or administrator moderation.
 
 ---

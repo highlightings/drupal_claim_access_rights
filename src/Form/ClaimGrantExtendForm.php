@@ -73,6 +73,7 @@ final class ClaimGrantExtendForm extends ConfirmFormBase {
       '#title' => $this->t('Days to extend'),
       '#default_value' => 30,
       '#min' => 1,
+      '#max' => 3650,
       '#required' => TRUE,
     ];
 
@@ -84,12 +85,19 @@ final class ClaimGrantExtendForm extends ConfirmFormBase {
    */
   public function submitForm(array &$form, FormStateInterface $form_state): void {
     if ($this->grant) {
-      $days = (int) $form_state->getValue('additional_days') ?: 30;
-      $this->claimAccessManager->extendGrant((int) $this->grant['id'], $days);
-      $this->messenger()->addStatus($this->t('Grant #@id has been extended by @days days.', [
-        '@id' => $this->grant['id'],
-        '@days' => $days,
-      ]));
+      $days = max(1, min(3650, (int) $form_state->getValue('additional_days') ?: 30));
+      // Administrators may deliberately reinstate a revoked or replaced grant.
+      if ($this->claimAccessManager->extendGrant((int) $this->grant['id'], $days, TRUE)) {
+        $this->messenger()->addStatus($this->t('Grant #@id has been extended by @days days.', [
+          '@id' => $this->grant['id'],
+          '@days' => $days,
+        ]));
+      }
+      else {
+        $this->messenger()->addError($this->t('Grant #@id could not be extended. It may already be permanent, or another active or overlapping exclusive grant exists on the same item.', [
+          '@id' => $this->grant['id'],
+        ]));
+      }
     }
     $form_state->setRedirectUrl($this->getCancelUrl());
   }

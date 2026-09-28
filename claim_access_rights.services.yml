@@ -7,6 +7,8 @@ services:
       - '@datetime.time'
       - '@cache_tags.invalidator'
       - '@logger.factory'
+      - '@lock'
+      - '@entity_type.manager'
 
   claim_access_rights.access_check.user_claims:
     class: Drupal\claim_access_rights\Access\UserClaimsAccessCheck

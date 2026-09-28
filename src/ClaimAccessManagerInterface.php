@@ -171,7 +171,7 @@ interface ClaimAccessManagerInterface {
    * @return bool
    *   TRUE on success, FALSE otherwise.
    */
-  public function extendGrant(int $grant_id, int $additional_days = 30): bool;
+  public function extendGrant(int $grant_id, int $additional_days = 30, bool $reinstate = FALSE): bool;
 
   /**
    * Submits an extension request for an access grant.
@@ -208,5 +208,43 @@ interface ClaimAccessManagerInterface {
    *   Number of expired grants updated.
    */
   public function purgeExpiredGrants(): int;
+
+  /**
+   * Checks whether an entity type and bundle is enabled for claiming.
+   */
+  public function isEntityTypeBundleEnabled(string $entity_type, string $bundle): bool;
+
+  /**
+   * Validates a requested access window against the configured limits.
+   *
+   * @return string|null
+   *   A translated error message, or NULL when the window is acceptable.
+   */
+  public function validateClaimWindow(int $starts_at, int $expires_at): ?string;
+
+  /**
+   * Checks a user's number of active claims against the configured maximum.
+   *
+   * @return string|null
+   *   A translated error message, or NULL when the user may claim more.
+   */
+  public function validateUserClaimLimit(int $uid): ?string;
+
+  /**
+   * Cache metadata that any access result or output derived from grants needs.
+   *
+   * @return array{tags: string[], max_age: int}
+   *   Per-entity cache tags plus a max-age ending at the account's next grant
+   *   start or expiry, so time-based access never outlives its window.
+   */
+  public function getAccessCacheMetadata(EntityInterface $entity, AccountInterface $account): array;
+
+  /**
+   * Seconds until the next start or expiry boundary among the given grants.
+   *
+   * @return int
+   *   Cache::PERMANENT (-1) when no boundary lies in the future.
+   */
+  public function getGrantsMaxAge(array $grants): int;
 
 }

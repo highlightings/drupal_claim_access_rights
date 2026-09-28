@@ -166,6 +166,38 @@ final class ClaimAccessSettingsForm extends ConfigFormBase {
       '#default_value' => $config->get('auto_approval_mode') ?: 'eca',
     ];
 
+    $form['limits'] = [
+      '#type' => 'details',
+      '#title' => $this->t('Abuse protection & limits'),
+      '#open' => TRUE,
+    ];
+    $form['limits']['allow_permanent_claims'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Allow users to request permanent (no end date) access'),
+      '#description' => $this->t('Leave off unless claims are reviewed: in Exclusive mode one permanent claim locks everyone else out of the item.'),
+      '#default_value' => (bool) $config->get('allow_permanent_claims'),
+    ];
+    $form['limits']['max_claim_days'] = [
+      '#type' => 'number',
+      '#title' => $this->t('Maximum access window (days)'),
+      '#description' => $this->t('Longest window a user can request, how far ahead they can reserve, and the total lifetime of a self-service extension. 0 = unlimited.'),
+      '#default_value' => (int) $config->get('max_claim_days'),
+      '#min' => 0,
+    ];
+    $form['limits']['max_active_claims_per_user'] = [
+      '#type' => 'number',
+      '#title' => $this->t('Maximum active claims per user'),
+      '#description' => $this->t('0 = unlimited.'),
+      '#default_value' => (int) $config->get('max_active_claims_per_user'),
+      '#min' => 0,
+    ];
+    $form['limits']['user_extension_auto_approve'] = [
+      '#type' => 'checkbox',
+      '#title' => $this->t('Auto-approve extension requests from claimants'),
+      '#description' => $this->t('When off, requests are only recorded in the grant notes for an administrator to act on.'),
+      '#default_value' => (bool) $config->get('user_extension_auto_approve'),
+    ];
+
     return parent::buildForm($form, $form_state);
   }
 
@@ -194,6 +226,10 @@ final class ClaimAccessSettingsForm extends ConfigFormBase {
       ->set('expiry_type', (string) $form_state->getValue('expiry_type'))
       ->set('default_expiry_days', (int) $form_state->getValue('default_expiry_days'))
       ->set('auto_approval_mode', (string) $form_state->getValue('auto_approval_mode'))
+      ->set('allow_permanent_claims', (bool) $form_state->getValue('allow_permanent_claims'))
+      ->set('max_claim_days', (int) $form_state->getValue('max_claim_days'))
+      ->set('max_active_claims_per_user', (int) $form_state->getValue('max_active_claims_per_user'))
+      ->set('user_extension_auto_approve', (bool) $form_state->getValue('user_extension_auto_approve'))
       ->save();
 
     parent::submitForm($form, $form_state);
