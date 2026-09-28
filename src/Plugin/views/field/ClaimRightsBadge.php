@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Drupal\claim_access_rights\Plugin\views\field;
 
+use Drupal\views\Attribute\ViewsField;
 use Drupal\views\Plugin\views\field\FieldPluginBase;
 use Drupal\views\ResultRow;
 
@@ -12,6 +13,7 @@ use Drupal\views\ResultRow;
  *
  * @ViewsField("claim_rights_badge")
  */
+#[ViewsField("claim_rights_badge")]
 final class ClaimRightsBadge extends FieldPluginBase {
 
   public function render(ResultRow $values): array {

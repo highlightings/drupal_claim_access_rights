@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Drupal\claim_access_rights\Plugin\views\field;
 
 use Drupal\claim_access_rights\ClaimAccessManagerInterface;
+use Drupal\views\Attribute\ViewsField;
 use Drupal\views\Plugin\views\field\FieldPluginBase;
 use Drupal\views\ResultRow;
 
@@ -13,6 +14,7 @@ use Drupal\views\ResultRow;
  *
  * @ViewsField("claim_status_badge")
  */
+#[ViewsField("claim_status_badge")]
 final class ClaimStatusBadge extends FieldPluginBase {
 
   public function query(): void {

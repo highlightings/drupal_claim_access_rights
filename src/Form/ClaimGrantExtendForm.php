@@ -55,7 +55,7 @@ final class ClaimGrantExtendForm extends ConfirmFormBase {
    * {@inheritdoc}
    */
   public function getCancelUrl(): Url {
-    return new Url('view.claim_access_grants.page_1');
+    return Url::fromRoute('view.claim_access_grants.page_1');
   }
 
   /**

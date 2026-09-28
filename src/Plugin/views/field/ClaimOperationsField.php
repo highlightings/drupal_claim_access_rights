@@ -6,6 +6,7 @@ namespace Drupal\claim_access_rights\Plugin\views\field;
 
 use Drupal\claim_access_rights\ClaimAccessManagerInterface;
 use Drupal\Core\Url;
+use Drupal\views\Attribute\ViewsField;
 use Drupal\views\Plugin\views\field\FieldPluginBase;
 use Drupal\views\ResultRow;
 
@@ -14,6 +15,7 @@ use Drupal\views\ResultRow;
  *
  * @ViewsField("claim_operations_field")
  */
+#[ViewsField("claim_operations_field")]
 final class ClaimOperationsField extends FieldPluginBase {
 
   public function query(): void {

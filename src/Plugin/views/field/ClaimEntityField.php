@@ -6,6 +6,7 @@ namespace Drupal\claim_access_rights\Plugin\views\field;
 
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Plugin\ContainerFactoryPluginInterface;
+use Drupal\views\Attribute\ViewsField;
 use Drupal\views\Plugin\views\field\FieldPluginBase;
 use Drupal\views\ResultRow;
 use Symfony\Component\DependencyInjection\ContainerInterface;
@@ -15,6 +16,7 @@ use Symfony\Component\DependencyInjection\ContainerInterface;
  *
  * @ViewsField("claim_entity_field")
  */
+#[ViewsField("claim_entity_field")]
 final class ClaimEntityField extends FieldPluginBase implements ContainerFactoryPluginInterface {
 
   public function __construct(

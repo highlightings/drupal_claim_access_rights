@@ -6,6 +6,7 @@ namespace Drupal\claim_access_rights\Plugin\views\field;
 
 use Drupal\Core\Datetime\DateFormatterInterface;
 use Drupal\Core\Plugin\ContainerFactoryPluginInterface;
+use Drupal\views\Attribute\ViewsField;
 use Drupal\views\Plugin\views\field\FieldPluginBase;
 use Drupal\views\ResultRow;
 use Symfony\Component\DependencyInjection\ContainerInterface;
@@ -15,6 +16,7 @@ use Symfony\Component\DependencyInjection\ContainerInterface;
  *
  * @ViewsField("claim_expiry_badge")
  */
+#[ViewsField("claim_expiry_badge")]
 final class ClaimExpiryBadge extends FieldPluginBase implements ContainerFactoryPluginInterface {
 
   public function __construct(

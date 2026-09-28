@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Drupal\claim_access_rights\Form;
 
 use Drupal\claim_access_rights\ClaimAccessManagerInterface;
+use Drupal\Core\Config\ConfigFactoryInterface;
+use Drupal\Core\Config\TypedConfigManagerInterface;
 use Drupal\Core\Entity\EntityTypeBundleInfoInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Form\ConfigFormBase;
@@ -17,20 +19,24 @@ use Symfony\Component\DependencyInjection\ContainerInterface;
 final class ClaimAccessSettingsForm extends ConfigFormBase {
 
   public function __construct(
+    ConfigFactoryInterface $config_factory,
+    TypedConfigManagerInterface $typedConfigManager,
     private readonly EntityTypeManagerInterface $entityTypeManager,
     private readonly EntityTypeBundleInfoInterface $bundleInfo,
-  ) {}
+  ) {
+    parent::__construct($config_factory, $typedConfigManager);
+  }
 
   /**
    * {@inheritdoc}
    */
   public static function create(ContainerInterface $container): self {
-    $instance = new self(
+    return new self(
+      $container->get('config.factory'),
+      $container->get('config.typed'),
       $container->get('entity_type.manager'),
       $container->get('entity_type.bundle.info'),
     );
-    $instance->setConfigFactory($container->get('config.factory'));
-    return $instance;
   }
 
   /**

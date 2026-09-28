@@ -6,6 +6,7 @@ namespace Drupal\claim_access_rights\Plugin\views\area;
 
 use Drupal\claim_access_rights\ClaimAccessManagerInterface;
 use Drupal\Core\Plugin\ContainerFactoryPluginInterface;
+use Drupal\views\Attribute\ViewsArea;
 use Drupal\views\Plugin\views\area\AreaPluginBase;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 
@@ -14,6 +15,7 @@ use Symfony\Component\DependencyInjection\ContainerInterface;
  *
  * @ViewsArea("claim_stats_area")
  */
+#[ViewsArea("claim_stats_area")]
 final class ClaimStatsArea extends AreaPluginBase implements ContainerFactoryPluginInterface {
 
   public function __construct(
