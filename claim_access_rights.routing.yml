@@ -6,14 +6,6 @@ claim_access_rights.settings:
   requirements:
     _permission: 'administer claim access rights'
 
-claim_access_rights.claims_list:
-  path: '/admin/content/claims'
-  defaults:
-    _controller: '\Drupal\claim_access_rights\Controller\ClaimsAdminController::listClaims'
-    _title: 'Sitewide Access Claims Dashboard'
-  requirements:
-    _permission: 'administer claim access rights'
-
 claim_access_rights.revoke_grant:
   path: '/admin/content/claims/{grant_id}/revoke'
   defaults:

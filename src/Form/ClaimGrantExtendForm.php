@@ -55,7 +55,7 @@ final class ClaimGrantExtendForm extends ConfirmFormBase {
    * {@inheritdoc}
    */
   public function getCancelUrl(): Url {
-    return new Url('claim_access_rights.claims_list');
+    return new Url('view.claim_access_grants.page_1');
   }
 
   /**
@@ -65,7 +65,7 @@ final class ClaimGrantExtendForm extends ConfirmFormBase {
     $this->grant = $this->claimAccessManager->getGrant((int) $grant_id);
     if (!$this->grant) {
       $this->messenger()->addError($this->t('Grant not found.'));
-      return $this->redirect('claim_access_rights.claims_list');
+      return $this->redirect('view.claim_access_grants.page_1');
     }
 
     $form['additional_days'] = [

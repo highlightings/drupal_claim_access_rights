@@ -9,5 +9,5 @@ claim_access_rights.claims_list:
   title: 'Access Claims'
   description: 'Manage and review listing claim access grants.'
   parent: system.admin_content
-  route_name: claim_access_rights.claims_list
+  route_name: view.claim_access_grants.page_1
   weight: 50
