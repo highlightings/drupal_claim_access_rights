@@ -194,6 +194,30 @@ interface ClaimAccessManagerInterface {
   public function deleteGrant(int $grant_id): bool;
 
   /**
+   * Deletes all access grants associated with a specific entity.
+   *
+   * @param string $entity_type
+   *   The entity type ID.
+   * @param int $entity_id
+   *   The entity ID.
+   *
+   * @return int
+   *   Number of deleted grant records.
+   */
+  public function deleteGrantsForEntity(string $entity_type, int $entity_id): int;
+
+  /**
+   * Deletes all access grants belonging to a specific user.
+   *
+   * @param int $uid
+   *   The user ID.
+   *
+   * @return int
+   *   Number of deleted grant records.
+   */
+  public function deleteGrantsForUser(int $uid): int;
+
+  /**
    * Returns aggregate statistics for sitewide claims dashboard.
    *
    * @return array

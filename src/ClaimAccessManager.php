@@ -586,6 +586,59 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
   /**
    * {@inheritdoc}
    */
+  public function deleteGrantsForEntity(string $entity_type, int $entity_id): int {
+    $deleted = (int) $this->database->delete('claim_access_grants')
+      ->condition('entity_type', $entity_type)
+      ->condition('entity_id', $entity_id)
+      ->execute();
+
+    if ($deleted > 0) {
+      $this->invalidateGrantCaches($entity_type, $entity_id);
+      $this->logger->info('Deleted @count claim access grant(s) for deleted entity @type #@id.', [
+        '@count' => $deleted,
+        '@type' => $entity_type,
+        '@id' => $entity_id,
+      ]);
+    }
+
+    return $deleted;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function deleteGrantsForUser(int $uid): int {
+    // Find affected entities to invalidate their cache tags.
+    $rows = $this->database->select('claim_access_grants', 'c')
+      ->fields('c', ['entity_type', 'entity_id'])
+      ->condition('uid', $uid)
+      ->execute()
+      ->fetchAll(\PDO::FETCH_ASSOC);
+
+    $deleted = (int) $this->database->delete('claim_access_grants')
+      ->condition('uid', $uid)
+      ->execute();
+
+    if ($deleted > 0) {
+      $this->userGrantIndex = [];
+      $tags = ['claim_access_grants', 'user:' . $uid];
+      foreach ($rows as $row) {
+        $tags[] = self::entityTag((string) $row['entity_type'], (int) $row['entity_id']);
+        $tags[] = $row['entity_type'] . ':' . $row['entity_id'];
+      }
+      $this->cacheTagsInvalidator->invalidateTags(array_unique($tags));
+      $this->logger->info('Deleted @count claim access grant(s) for deleted user #@uid.', [
+        '@count' => $deleted,
+        '@uid' => $uid,
+      ]);
+    }
+
+    return $deleted;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
   public function getStatistics(): array {
     $now = $this->time->getRequestTime();
     $soon = $now + (7 * 86400);

@@ -57,6 +57,36 @@ function claim_access_rights_cron(): void {
 }
 
 /**
+ * Implements hook_entity_delete().
+ *
+ * Automatically cleans up associated claim access grants when an entity or user is deleted.
+ */
+function claim_access_rights_entity_delete(EntityInterface $entity): void {
+  $entity_type_id = $entity->getEntityTypeId();
+  if (in_array($entity_type_id, ['webform_submission'], TRUE)) {
+    return;
+  }
+
+  /** @var \Drupal\claim_access_rights\ClaimAccessManagerInterface $manager */
+  $manager = \Drupal::service('claim_access_rights.manager');
+
+  if ($entity_type_id === 'user') {
+    $manager->deleteGrantsForUser((int) $entity->id());
+  }
+
+  $manager->deleteGrantsForEntity($entity_type_id, (int) $entity->id());
+}
+
+/**
+ * Implements hook_entity_trash_delete().
+ *
+ * Automatically cleans up claim access grants when an entity is soft-deleted to trash.
+ */
+function claim_access_rights_entity_trash_delete(EntityInterface $entity): void {
+  claim_access_rights_entity_delete($entity);
+}
+
+/**
  * Implements hook_entity_view().
  *
  * Injects claim callout or management banner on enabled entity view displays.

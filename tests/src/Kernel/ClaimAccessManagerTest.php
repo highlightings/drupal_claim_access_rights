@@ -88,4 +88,24 @@ final class ClaimAccessManagerTest extends KernelTestBase {
     $this->assertSame('expired', $this->manager->getGrant($id)['status']);
   }
 
+  public function testEntityDeletionCleansUpGrants(): void {
+    $user = $this->createUser(['claim access rights']);
+    $id = $this->manager->grantAccess('node', (int) $this->node->id(), (int) $user->id(), ['view', 'edit'], NULL, time() + 86400);
+    $this->assertNotEmpty($this->manager->getGrant($id));
+
+    $this->node->delete();
+    $this->assertNull($this->manager->getGrant($id));
+  }
+
+  public function testUserDeletionCleansUpGrants(): void {
+    $user = $this->createUser(['claim access rights']);
+    $node = Node::create(['type' => 'listing', 'title' => 'Hall 2']);
+    $node->save();
+    $id = $this->manager->grantAccess('node', (int) $node->id(), (int) $user->id(), ['view', 'edit'], NULL, time() + 86400);
+    $this->assertNotEmpty($this->manager->getGrant($id));
+
+    $user->delete();
+    $this->assertNull($this->manager->getGrant($id));
+  }
+
 }

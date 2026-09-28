@@ -288,6 +288,7 @@ Grants are stored in the `{claim_access_grants}` table:
 
 ## Troubleshooting & Cron
 
+- **Automatic Entity & User Cleanup**: Implements `hook_entity_delete()` so that when any claimed entity (node, media, block, term) or user account is deleted, all associated access grants are automatically purged from `{claim_access_grants}` and relevant cache tags invalidated, preventing orphaned records.
 - **Expired Grants**: The module hooks into `hook_cron()` to automatically update active grants whose `expires_at > 0 && expires_at <= current_time` to `expired` status and invalidate cache tags.
 - **Cache Tags**: Grants automatically invalidate the entity cache tag (e.g. `node:42`), the claimant user tag (`user:5`), and the global list tag `claim_access_grants_list` whenever status changes.
 - **Manual Purge**: You can trigger cron manually via Drush:
