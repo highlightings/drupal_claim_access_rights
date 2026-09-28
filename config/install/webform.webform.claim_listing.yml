@@ -39,6 +39,30 @@ elements: |-
       - edit
       - view
     '#required': true
+  access_duration:
+    '#type': fieldset
+    '#title': 'Access Duration'
+    '#open': true
+    start_date:
+      '#type': date
+      '#title': 'Start Date'
+      '#default_value': 'today'
+      '#required': true
+    no_end_date:
+      '#type': checkbox
+      '#title': 'Permanent Access (No end date)'
+      '#description': 'Check this option if requesting ongoing, indefinite access.'
+    end_date:
+      '#type': date
+      '#title': 'End Date'
+      '#description': 'Date when requested access rights expire.'
+      '#states':
+        visible:
+          ':input[name="no_end_date"]':
+            checked: false
+        required:
+          ':input[name="no_end_date"]':
+            checked: false
   claim_notes:
     '#type': textarea
     '#title': 'Reason / Verification Note'

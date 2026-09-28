@@ -62,18 +62,20 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
     ?string $mode = null,
     ?int $expires_at = null,
     ?string $notes = null,
-    ?int $submission_id = null
+    ?int $submission_id = null,
+    ?int $starts_at = null
   ): int {
     $config = $this->configFactory->get('claim_access_rights.settings');
     $mode = $mode ?: (string) $config->get('claim_mode') ?: self::MODE_EXCLUSIVE;
     $now = $this->time->getRequestTime();
+    $starts_at = ($starts_at !== null && $starts_at > 0) ? $starts_at : $now;
 
     // Calculate expiry if not explicitly passed.
     if ($expires_at === null) {
       $expiry_type = (string) $config->get('expiry_type') ?: 'days';
       $days = (int) $config->get('default_expiry_days') ?: 30;
       if ($expiry_type === 'days' && $days > 0) {
-        $expires_at = $now + ($days * 86400);
+        $expires_at = $starts_at + ($days * 86400);
       }
       else {
         $expires_at = 0;
@@ -88,23 +90,35 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
     // Handle claim mode rules.
     switch ($mode) {
       case self::MODE_EXCLUSIVE:
-        $active_grants = $this->getActiveGrants($entity_type, $entity_id);
-        foreach ($active_grants as $grant) {
-          if ((int) $grant['uid'] !== $uid) {
-            throw new \RuntimeException(sprintf(
-              'Exclusive access is already granted on %s ID %d to user ID %d.',
-              $entity_type,
-              $entity_id,
-              $grant['uid']
-            ));
-          }
+        $conflict = $this->getOverlappingExclusiveGrant($entity_type, $entity_id, $starts_at, $expires_at);
+        if ($conflict && (int) $conflict['uid'] !== $uid) {
+          $conf_start = date('Y-m-d', (int) ($conflict['starts_at'] ?: $conflict['created']));
+          $conf_end = (int) $conflict['expires_at'] === 0 ? 'Indefinite' : date('Y-m-d', (int) $conflict['expires_at']);
+          throw new \RuntimeException(sprintf(
+            'Exclusive access is already reserved on %s ID %d for overlapping duration (%s to %s).',
+            $entity_type,
+            $entity_id,
+            $conf_start,
+            $conf_end
+          ));
         }
-        // If the same user has an active grant, update it.
-        if (!empty($active_grants)) {
-          $existing_id = (int) $active_grants[0]['id'];
+
+        // If the same user has an active grant on this entity, update it.
+        $active_user_grant = $this->database->select('claim_access_grants', 'c')
+          ->fields('c', ['id'])
+          ->condition('entity_type', $entity_type)
+          ->condition('entity_id', $entity_id)
+          ->condition('uid', $uid)
+          ->condition('status', self::STATUS_ACTIVE)
+          ->execute()
+          ->fetchField();
+
+        if ($active_user_grant) {
+          $existing_id = (int) $active_user_grant;
           $this->database->update('claim_access_grants')
             ->fields([
               'rights' => $rights_str,
+              'starts_at' => $starts_at,
               'expires_at' => $expires_at,
               'mode' => $mode,
               'notes' => $notes,
@@ -115,6 +129,7 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
           $grant_id = $existing_id;
           break;
         }
+
         $grant_id = (int) $this->database->insert('claim_access_grants')
           ->fields([
             'entity_type' => $entity_type,
@@ -124,6 +139,7 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
             'mode' => $mode,
             'status' => self::STATUS_ACTIVE,
             'created' => $now,
+            'starts_at' => $starts_at,
             'expires_at' => $expires_at,
             'submission_id' => $submission_id ?? 0,
             'notes' => $notes,
@@ -149,6 +165,7 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
             'mode' => $mode,
             'status' => self::STATUS_ACTIVE,
             'created' => $now,
+            'starts_at' => $starts_at,
             'expires_at' => $expires_at,
             'submission_id' => $submission_id ?? 0,
             'notes' => $notes,
@@ -172,6 +189,7 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
           $this->database->update('claim_access_grants')
             ->fields([
               'rights' => $rights_str,
+              'starts_at' => $starts_at,
               'expires_at' => $expires_at,
               'mode' => $mode,
               'notes' => $notes,
@@ -191,6 +209,7 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
               'mode' => $mode,
               'status' => self::STATUS_ACTIVE,
               'created' => $now,
+              'starts_at' => $starts_at,
               'expires_at' => $expires_at,
               'submission_id' => $submission_id ?? 0,
               'notes' => $notes,
@@ -221,6 +240,57 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
   /**
    * {@inheritdoc}
    */
+  public function getOverlappingExclusiveGrant(
+    string $entity_type,
+    int $entity_id,
+    int $starts_at,
+    int $expires_at,
+    ?int $exclude_grant_id = null
+  ): ?array {
+    $query = $this->database->select('claim_access_grants', 'c')
+      ->fields('c')
+      ->condition('entity_type', $entity_type)
+      ->condition('entity_id', $entity_id)
+      ->condition('status', self::STATUS_ACTIVE)
+      ->condition('mode', self::MODE_EXCLUSIVE);
+
+    if ($exclude_grant_id) {
+      $query->condition('id', $exclude_grant_id, '<>');
+    }
+
+    $grants = $query->execute()->fetchAll(\PDO::FETCH_ASSOC);
+    $now = $this->time->getRequestTime();
+
+    foreach ($grants as $grant) {
+      $g_start = (int) ($grant['starts_at'] ?: $grant['created']);
+      $g_end = (int) $grant['expires_at'];
+
+      // Skip expired grants.
+      if ($g_end > 0 && $g_end <= $now) {
+        continue;
+      }
+
+      $no_overlap = FALSE;
+      // If requested interval ends before existing grant starts:
+      if ($expires_at > 0 && $expires_at <= $g_start) {
+        $no_overlap = TRUE;
+      }
+      // If existing grant ends before requested interval starts:
+      if ($g_end > 0 && $starts_at >= $g_end) {
+        $no_overlap = TRUE;
+      }
+
+      if (!$no_overlap) {
+        return $grant;
+      }
+    }
+
+    return NULL;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
   public function hasAccess(EntityInterface $entity, AccountInterface $account, string $op): bool {
     if ($account->isAnonymous() || !$entity->id()) {
       return FALSE;
@@ -244,9 +314,16 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       return FALSE;
     }
 
-    // Check expiration.
+    $starts_at = (int) ($record['starts_at'] ?: $record['created']);
     $expires_at = (int) $record['expires_at'];
     $now = $this->time->getRequestTime();
+
+    // Check if access period has started yet.
+    if ($starts_at > $now) {
+      return FALSE;
+    }
+
+    // Check expiration.
     if ($expires_at > 0 && $expires_at <= $now) {
       // Mark as expired.
       $this->database->update('claim_access_grants')
@@ -307,11 +384,26 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       }
     }
 
-    // If Exclusive mode and another user has an active grant, disable new claims.
+    // If Exclusive mode and another user has an active grant:
     if ($mode === self::MODE_EXCLUSIVE && !empty($active_grants)) {
+      foreach ($active_grants as $grant) {
+        if ((int) $grant['expires_at'] === 0) {
+          // Permanently claimed under exclusive mode: new requests impossible, button grayed out.
+          return [
+            'claimable' => FALSE,
+            'permanently_claimed' => TRUE,
+            'reason' => 'This item has been permanently claimed with exclusive access. New requests cannot be accepted.',
+            'mode' => $mode,
+            'active_grants' => $active_grants,
+          ];
+        }
+      }
+
+      // If active exclusive grants exist with finite expiry:
       return [
-        'claimable' => FALSE,
-        'reason' => 'This item has already been claimed and exclusive access is active. New requests are currently disabled.',
+        'claimable' => TRUE,
+        'has_exclusive_windows' => TRUE,
+        'reason' => 'Exclusive access is reserved for specific time windows. You can request access for non-overlapping dates.',
         'mode' => $mode,
         'active_grants' => $active_grants,
       ];
@@ -538,6 +630,7 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
     $stats = [
       'total' => count($grants),
       'active' => 0,
+      'no_expiry' => 0,
       'expiring_soon' => 0,
       'expired' => 0,
       'replaced' => 0,
@@ -558,7 +651,10 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
         }
         else {
           $stats['active']++;
-          if ($expires_at > $now && $expires_at <= $seven_days_later) {
+          if ($expires_at === 0) {
+            $stats['no_expiry']++;
+          }
+          elseif ($expires_at > $now && $expires_at <= $seven_days_later) {
             $stats['expiring_soon']++;
           }
         }

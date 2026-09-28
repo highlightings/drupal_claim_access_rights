@@ -45,6 +45,9 @@ interface ClaimAccessManagerInterface {
    * @param int|null $submission_id
    *   Optional webform submission ID.
    *
+   * @param int|null $starts_at
+   *   Optional start timestamp when the grant begins. Defaults to creation time.
+   *
    * @return int
    *   The created or updated grant ID.
    */
@@ -56,8 +59,34 @@ interface ClaimAccessManagerInterface {
     ?string $mode = null,
     ?int $expires_at = null,
     ?string $notes = null,
-    ?int $submission_id = null
+    ?int $submission_id = null,
+    ?int $starts_at = null
   ): int;
+
+  /**
+   * Checks if a requested access interval overlaps with an active exclusive grant.
+   *
+   * @param string $entity_type
+   *   The entity type ID.
+   * @param int $entity_id
+   *   The target entity ID.
+   * @param int $starts_at
+   *   The requested start timestamp.
+   * @param int $expires_at
+   *   The requested expiration timestamp (0 for indefinite / permanent).
+   * @param int|null $exclude_grant_id
+   *   Optional grant ID to exclude (e.g. when renewing).
+   *
+   * @return array|null
+   *   The conflicting grant record if an overlap exists, NULL otherwise.
+   */
+  public function getOverlappingExclusiveGrant(
+    string $entity_type,
+    int $entity_id,
+    int $starts_at,
+    int $expires_at,
+    ?int $exclude_grant_id = null
+  ): ?array;
 
   /**
    * Checks if an account has access to perform an operation on an entity via claim grant.

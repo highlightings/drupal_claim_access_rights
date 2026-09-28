@@ -346,6 +346,34 @@ display:
               authenticated: authenticated
             placeholder: 'node, block_content, media, etc.'
           is_grouped: false
+        expiry_type:
+          id: expiry_type
+          table: claim_access_grants
+          field: expiry_type
+          relationship: none
+          group_type: group
+          admin_label: ''
+          plugin_id: claim_expiry_type
+          operator: in
+          value: {  }
+          group: 1
+          exposed: true
+          expose:
+            operator_id: expiry_type_op
+            label: 'Expiration Type'
+            description: ''
+            use_operator: false
+            operator: expiry_type_op
+            operator_limit_selection: false
+            operator_list: {  }
+            identifier: expiry_type
+            required: false
+            remember: false
+            multiple: false
+            remember_roles:
+              authenticated: authenticated
+            reduce: false
+          is_grouped: false
       style:
         type: table
         options:

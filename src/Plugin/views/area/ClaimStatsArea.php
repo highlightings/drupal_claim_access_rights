@@ -46,6 +46,13 @@ final class ClaimStatsArea extends AreaPluginBase implements ContainerFactoryPlu
         'border' => '#bbf7d0',
       ],
       [
+        'label' => $this->t('No Expiry (Indefinite)'),
+        'count' => $stats['no_expiry'] ?? 0,
+        'color' => '#6d28d9',
+        'bg' => '#f5f3ff',
+        'border' => '#ddd6fe',
+      ],
+      [
         'label' => $this->t('Expiring Soon (< 7 Days)'),
         'count' => $stats['expiring_soon'],
         'color' => '#b45309',

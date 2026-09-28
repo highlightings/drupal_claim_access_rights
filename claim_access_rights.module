@@ -101,18 +101,38 @@ function claim_access_rights_entity_view(array &$build, EntityInterface $entity,
     $html .= '</div>';
 
     $container['content'] = [
-      '#markup' => $html,
+      '#type' => 'inline_template',
+      '#template' => '{{ html|raw }}',
+      '#context' => ['html' => $html],
+    ];
+  }
+  elseif (!empty($info['permanently_claimed'])) {
+    $html = '<div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">';
+    $html .= '<div>';
+    $html .= '<strong style="color:#475569;">Exclusive Access Granted</strong><br>';
+    $html .= '<span style="color:#64748b; font-size:0.9em;">This ' . htmlspecialchars(strtolower($type_label)) . ' has been claimed indefinitely under exclusive access. New access requests cannot be accepted.</span>';
+    $html .= '</div>';
+    $html .= '<button disabled class="button button--disabled" style="background:#cbd5e1; color:#64748b; padding:8px 18px; border-radius:6px; font-weight:bold; border:1px solid #94a3b8; cursor:not-allowed;" title="Claiming is not possible for content with indefinite exclusive access.">Claiming Unavailable</button>';
+    $html .= '</div>';
+
+    $container['content'] = [
+      '#type' => 'inline_template',
+      '#template' => '{{ html|raw }}',
+      '#context' => ['html' => $html],
     ];
   }
   elseif ($current_user->isAnonymous()) {
     $destination = $entity->hasLinkTemplate('canonical') ? $entity->toUrl()->toString() : '';
     $login_url = Url::fromRoute('user.login', [], ['query' => $destination ? ['destination' => $destination] : []])->toString();
+    $html = sprintf(
+      '<div><strong>Want to manage this %s?</strong> <a href="%s" style="color:#2563eb; font-weight:bold;">Log in to claim access</a>.</div>',
+      htmlspecialchars(strtolower($type_label)),
+      $login_url
+    );
     $container['content'] = [
-      '#markup' => sprintf(
-        '<div><strong>Want to manage this %s?</strong> <a href="%s" style="color:#2563eb; font-weight:bold;">Log in to claim access</a>.</div>',
-        htmlspecialchars(strtolower($type_label)),
-        $login_url
-      ),
+      '#type' => 'inline_template',
+      '#template' => '{{ html|raw }}',
+      '#context' => ['html' => $html],
     ];
   }
   elseif ($info['claimable']) {
@@ -124,23 +144,113 @@ function claim_access_rights_entity_view(array &$build, EntityInterface $entity,
       ],
     ])->toString();
 
+    $notice_text = !empty($info['has_exclusive_windows'])
+      ? 'Exclusive access is active for specific dates. You can claim access for non-overlapping dates.'
+      : 'Claim view and edit rights to manage details and updates.';
+
     $html = '<div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">';
     $html .= '<div>';
     $html .= '<strong>Is this your ' . htmlspecialchars(strtolower($type_label)) . '?</strong><br>';
-    $html .= '<span style="color:#64748b; font-size:0.9em;">Claim view and edit rights to manage details and updates.</span>';
+    $html .= '<span style="color:#64748b; font-size:0.9em;">' . htmlspecialchars($notice_text) . '</span>';
     $html .= '</div>';
     $html .= '<a href="' . $claim_url . '" class="button button--primary claim-entity-btn" style="background:#16a34a; color:#fff; padding:8px 18px; border-radius:6px; text-decoration:none; font-weight:bold;">Claim This ' . htmlspecialchars($type_label) . '</a>';
     $html .= '</div>';
 
     $container['content'] = [
-      '#markup' => $html,
+      '#type' => 'inline_template',
+      '#template' => '{{ html|raw }}',
+      '#context' => ['html' => $html],
     ];
   }
   else {
+    $html = '<div style="color:#64748b;"><em>' . htmlspecialchars($info['reason']) . '</em></div>';
     $container['content'] = [
-      '#markup' => '<div style="color:#64748b;"><em>' . htmlspecialchars($info['reason']) . '</em></div>',
+      '#type' => 'inline_template',
+      '#template' => '{{ html|raw }}',
+      '#context' => ['html' => $html],
     ];
   }
 
   $build['claim_access_box'] = $container;
 }
+
+/**
+ * Implements hook_form_FORM_ID_alter() for webform_submission_claim_listing_add_form.
+ */
+function claim_access_rights_form_webform_submission_claim_listing_add_form_alter(array &$form, \Drupal\Core\Form\FormStateInterface $form_state, string $form_id): void {
+  $form['#validate'][] = 'claim_access_rights_claim_listing_form_validate';
+}
+
+/**
+ * Custom validation callback for claim listing webform submissions.
+ */
+function claim_access_rights_claim_listing_form_validate(array &$form, \Drupal\Core\Form\FormStateInterface $form_state): void {
+  $entity_type = (string) $form_state->getValue('target_entity_type') ?: 'node';
+  $entity_id = (int) $form_state->getValue('target_entity_id');
+
+  if (!$entity_id) {
+    return;
+  }
+
+  /** @var \Drupal\claim_access_rights\ClaimAccessManagerInterface $manager */
+  $manager = \Drupal::service('claim_access_rights.manager');
+
+  $start_date_val = $form_state->getValue('start_date');
+  $no_end_date = (bool) $form_state->getValue('no_end_date');
+  $end_date_val = $form_state->getValue('end_date');
+
+  $now = \Drupal::time()->getRequestTime();
+  $starts_at = !empty($start_date_val) ? strtotime((string) $start_date_val) : $now;
+  $expires_at = $no_end_date ? 0 : (!empty($end_date_val) ? strtotime((string) $end_date_val . ' 23:59:59') : 0);
+
+  // Validate end date is on or after start date if not indefinite.
+  if (!$no_end_date && $expires_at > 0 && $expires_at < $starts_at) {
+    $form_state->setErrorByName('end_date', t('Access end date must be on or after the start date.'));
+    return;
+  }
+
+  // Check overlapping exclusive grants.
+  $conflict = $manager->getOverlappingExclusiveGrant($entity_type, $entity_id, $starts_at, $expires_at);
+  if ($conflict) {
+    $current_uid = (int) \Drupal::currentUser()->id();
+    if ((int) $conflict['uid'] !== $current_uid) {
+      $conf_start = \Drupal::service('date.formatter')->format((int) ($conflict['starts_at'] ?: $conflict['created']), 'custom', 'M j, Y');
+      $conf_end = (int) $conflict['expires_at'] === 0 ? t('Indefinite (No End Date)') : \Drupal::service('date.formatter')->format((int) $conflict['expires_at'], 'custom', 'M j, Y');
+
+      $form_state->setErrorByName('start_date', t(
+        'Access is already exclusively reserved for this content from @start to @end. Access is not possible during this overlapping duration. Please choose dates outside this window.',
+        ['@start' => $conf_start, '@end' => $conf_end]
+      ));
+    }
+  }
+}
+
+/**
+ * Implements hook_preprocess_views_view_table().
+ *
+ * Applies a distinct visual highlight to indefinite (no-expiry) claims in the table.
+ */
+function claim_access_rights_preprocess_views_view_table(array &$variables): void {
+  $view = $variables['view'] ?? NULL;
+  if (!$view || !in_array($view->id(), ['claim_access_grants'], TRUE)) {
+    return;
+  }
+
+  foreach ($variables['rows'] as $index => $row) {
+    $result_row = $view->result[$index] ?? NULL;
+    if (!$result_row) {
+      continue;
+    }
+
+    $expires_at = (int) ($result_row->claim_access_grants_expires_at ?? $result_row->expires_at ?? -1);
+    if ($expires_at === 0 && isset($variables['rows'][$index]['attributes'])) {
+      $variables['rows'][$index]['attributes']->addClass('claim-row--indefinite');
+      $existing_style = (string) $variables['rows'][$index]['attributes']->offsetGet('style');
+      $variables['rows'][$index]['attributes']->setAttribute(
+        'style',
+        trim($existing_style . ' background-color: #faf5ff; border-left: 3px solid #8b5cf6;')
+      );
+    }
+  }
+}
+

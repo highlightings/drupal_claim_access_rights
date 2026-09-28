@@ -81,6 +81,22 @@ final class GrantClaimAccessAction extends ActionBase implements ContainerFactor
     $notes = (string) ($data['claim_notes'] ?? '');
     $submission_id = (int) $object->id();
 
+    $start_date_str = (string) ($data['start_date'] ?? '');
+    $no_end_date = !empty($data['no_end_date']);
+    $end_date_str = (string) ($data['end_date'] ?? '');
+
+    $now = \Drupal::time()->getRequestTime();
+    $starts_at = !empty($start_date_str) ? strtotime($start_date_str) : $now;
+    if ($no_end_date) {
+      $expires_at = 0;
+    }
+    elseif (!empty($end_date_str)) {
+      $expires_at = strtotime($end_date_str . ' 23:59:59');
+    }
+    else {
+      $expires_at = null;
+    }
+
     try {
       $this->claimAccessManager->grantAccess(
         $entity_type,
@@ -88,9 +104,10 @@ final class GrantClaimAccessAction extends ActionBase implements ContainerFactor
         $uid,
         $rights,
         null,
-        null,
+        $expires_at,
         $notes,
-        $submission_id
+        $submission_id,
+        $starts_at
       );
     }
     catch (\Throwable $e) {

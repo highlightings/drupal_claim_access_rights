@@ -154,6 +154,21 @@ function claim_access_rights_views_data(): array {
     ],
   ];
 
+  // Starts At Date.
+  $data['claim_access_grants']['starts_at'] = [
+    'title' => t('Start Date'),
+    'help' => t('Timestamp when the access grant becomes effective.'),
+    'field' => [
+      'id' => 'date',
+    ],
+    'filter' => [
+      'id' => 'date',
+    ],
+    'sort' => [
+      'id' => 'date',
+    ],
+  ];
+
   // Expiration Date.
   $data['claim_access_grants']['expires_at'] = [
     'title' => t('Expiration Date'),
@@ -166,6 +181,16 @@ function claim_access_rights_views_data(): array {
     ],
     'sort' => [
       'id' => 'date',
+    ],
+  ];
+
+  // Expiration Type Filter (Indefinite vs Expiring).
+  $data['claim_access_grants']['expiry_type'] = [
+    'title' => t('Expiration Type'),
+    'help' => t('Filter by indefinite (no expiration) access or expiring access.'),
+    'filter' => [
+      'id' => 'claim_expiry_type',
+      'real field' => 'expires_at',
     ],
   ];
 
