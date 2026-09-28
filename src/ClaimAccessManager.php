@@ -73,7 +73,8 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
     ?int $expires_at = null,
     ?string $notes = null,
     ?int $submission_id = null,
-    ?int $starts_at = null
+    ?int $starts_at = null,
+    ?EntityInterface $entity = null
   ): int {
     $config = $this->configFactory->get('claim_access_rights.settings');
     $mode = $mode ?: (string) $config->get('claim_mode') ?: self::MODE_EXCLUSIVE;
@@ -99,10 +100,12 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
     if ($uid <= 0 || $entity_id <= 0) {
       throw new \InvalidArgumentException('A valid user and entity ID are required.');
     }
-    $entity = $this->entityTypeManager->hasDefinition($entity_type)
-      ? $this->entityTypeManager->getStorage($entity_type)->load($entity_id)
-      : NULL;
-    if (!$entity || !$this->isEntityTypeBundleEnabled($entity_type, $entity->bundle())) {
+    if (!$entity) {
+      $entity = $this->entityTypeManager->hasDefinition($entity_type)
+        ? $this->entityTypeManager->getStorage($entity_type)->load($entity_id)
+        : NULL;
+    }
+    if (!$entity || $entity->getEntityTypeId() !== $entity_type || (int) $entity->id() !== $entity_id || !$this->isEntityTypeBundleEnabled($entity_type, $entity->bundle())) {
       throw new \InvalidArgumentException('The target entity cannot be claimed.');
     }
     if ($expires_at > 0 && $expires_at < $starts_at) {
@@ -217,40 +220,53 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
     int $expires_at,
     ?int $exclude_grant_id = null
   ): ?array {
+    $now = $this->time->getRequestTime();
+    $starts_at = ($starts_at > 0) ? $starts_at : $now;
+
     $query = $this->database->select('claim_access_grants', 'c')
       ->fields('c')
       ->condition('entity_type', $entity_type)
       ->condition('entity_id', $entity_id)
-      ->condition('status', self::STATUS_ACTIVE)
-      ->condition('mode', self::MODE_EXCLUSIVE);
+      ->condition('status', [self::STATUS_ACTIVE, self::STATUS_PENDING], 'IN');
 
     if ($exclude_grant_id) {
       $query->condition('id', $exclude_grant_id, '<>');
     }
 
-    $grants = $query->execute()->fetchAll(\PDO::FETCH_ASSOC);
-    $now = $this->time->getRequestTime();
+    // Problem 2: Filter expired rows directly in SQL to prevent memory overhead.
+    $query->condition($query->orConditionGroup()
+      ->condition('expires_at', 0)
+      ->condition('expires_at', $now, '>')
+    );
 
+    // Problem 6: Sargable index condition on date_range:
+    // Existing grant must not finish before the requested interval starts.
+    $query->condition($query->orConditionGroup()
+      ->condition('expires_at', 0)
+      ->condition('expires_at', $starts_at, '>')
+    );
+
+    // If requested interval has finite end, existing grant must start before requested interval ends.
+    if ($expires_at > 0) {
+      $query->condition('starts_at', $expires_at, '<');
+    }
+
+    $grants = $query->execute()->fetchAll(\PDO::FETCH_ASSOC);
+
+    // Problem 1: Precise mathematical interval overlap handling for open-ended and finite intervals.
     foreach ($grants as $grant) {
       $g_start = (int) ($grant['starts_at'] ?: $grant['created']);
       $g_end = (int) $grant['expires_at'];
 
-      // Skip expired grants.
+      // Skip expired grants if any bypassed SQL.
       if ($g_end > 0 && $g_end <= $now) {
         continue;
       }
 
-      $no_overlap = FALSE;
-      // If requested interval ends before existing grant starts:
-      if ($expires_at > 0 && $expires_at <= $g_start) {
-        $no_overlap = TRUE;
-      }
-      // If existing grant ends before requested interval starts:
-      if ($g_end > 0 && $starts_at >= $g_end) {
-        $no_overlap = TRUE;
-      }
+      $overlaps = ($expires_at === 0 || $expires_at > $g_start)
+        && ($g_end === 0 || $starts_at < $g_end);
 
-      if (!$no_overlap) {
+      if ($overlaps) {
         return $grant;
       }
     }
@@ -359,19 +375,19 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
    * {@inheritdoc}
    */
   public function getActiveGrants(string $entity_type, int $entity_id): array {
-    $records = $this->database->select('claim_access_grants', 'c')
+    $now = $this->time->getRequestTime();
+    $query = $this->database->select('claim_access_grants', 'c')
       ->fields('c')
       ->condition('entity_type', $entity_type)
       ->condition('entity_id', $entity_id)
-      ->condition('status', self::STATUS_ACTIVE)
-      ->execute()
-      ->fetchAll(\PDO::FETCH_ASSOC);
+      ->condition('status', [self::STATUS_ACTIVE, self::STATUS_PENDING], 'IN');
 
-    $now = $this->time->getRequestTime();
-    return array_values(array_filter($records, static function (array $record) use ($now): bool {
-      $expires_at = (int) $record['expires_at'];
-      return $expires_at === 0 || $expires_at > $now;
-    }));
+    $query->condition($query->orConditionGroup()
+      ->condition('expires_at', 0)
+      ->condition('expires_at', $now, '>')
+    );
+
+    return $query->execute()->fetchAll(\PDO::FETCH_ASSOC);
   }
 
   /**
@@ -462,9 +478,8 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
         return FALSE;
       }
 
-      // Bringing an inactive grant back must not create a second holder or an
-      // overlapping exclusive reservation.
-      if ($grant['status'] !== self::STATUS_ACTIVE && $grant['mode'] !== self::MODE_APPEND) {
+      // Bringing an inactive replaced grant back must not create a second active holder.
+      if ($grant['mode'] === self::MODE_REPLACE && !in_array($grant['status'], [self::STATUS_ACTIVE, self::STATUS_PENDING], TRUE)) {
         foreach ($this->getActiveGrants((string) $grant['entity_type'], (int) $grant['entity_id']) as $other) {
           if ((int) $other['id'] !== $grant_id) {
             return FALSE;
@@ -547,11 +562,15 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       return TRUE;
     }
 
-    // Manual approval: record the request without touching the status, so the
-    // claimant keeps the access they still legitimately hold while waiting.
+    // Manual approval: record the request and mark status as pending review.
+    // The claimant preserves access to the item while waiting if their current
+    // grant window has not yet expired.
     $note_line = "[{$now_date}] Extension requested: +{$additional_days} days." . ($reason ? " Reason: {$reason}" : '');
     $this->database->update('claim_access_grants')
-      ->fields(['notes' => trim($existing_notes . "\n" . $note_line)])
+      ->fields([
+        'status' => self::STATUS_PENDING,
+        'notes' => trim($existing_notes . "\n" . $note_line),
+      ])
       ->condition('id', $grant_id)
       ->execute();
 
@@ -850,7 +869,7 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       $rows = $this->database->select('claim_access_grants', 'c')
         ->fields('c')
         ->condition('uid', $uid)
-        ->condition('status', self::STATUS_ACTIVE)
+        ->condition('status', [self::STATUS_ACTIVE, self::STATUS_PENDING], 'IN')
         ->execute()
         ->fetchAll(\PDO::FETCH_ASSOC);
       foreach ($rows as $row) {
@@ -880,9 +899,9 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
    */
   private function withEntityLock(string $entity_type, int $entity_id, callable $callback): mixed {
     $name = 'claim_access_rights:' . $entity_type . ':' . $entity_id;
-    if (!$this->lock->acquire($name, 15.0)) {
-      $this->lock->wait($name, 5);
-      if (!$this->lock->acquire($name, 15.0)) {
+    if (!$this->lock->acquire($name, 10.0)) {
+      $this->lock->wait($name, 2);
+      if (!$this->lock->acquire($name, 10.0)) {
         throw new \RuntimeException('Could not obtain a lock for this item. Please try again.');
       }
     }

@@ -47,6 +47,8 @@ interface ClaimAccessManagerInterface {
    *
    * @param int|null $starts_at
    *   Optional start timestamp when the grant begins. Defaults to creation time.
+   * @param \Drupal\Core\Entity\EntityInterface|null $entity
+   *   Optional pre-loaded entity object to bypass redundant storage loads.
    *
    * @return int
    *   The created or updated grant ID.
@@ -60,7 +62,8 @@ interface ClaimAccessManagerInterface {
     ?int $expires_at = null,
     ?string $notes = null,
     ?int $submission_id = null,
-    ?int $starts_at = null
+    ?int $starts_at = null,
+    ?\Drupal\Core\Entity\EntityInterface $entity = null
   ): int;
 
   /**

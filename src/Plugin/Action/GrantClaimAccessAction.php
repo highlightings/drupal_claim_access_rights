@@ -153,7 +153,8 @@ final class GrantClaimAccessAction extends ActionBase implements ContainerFactor
         (int) $expires_at,
         $notes,
         $submission_id,
-        (int) $starts_at
+        (int) $starts_at,
+        $entity
       );
     }
     catch (\Throwable $e) {
