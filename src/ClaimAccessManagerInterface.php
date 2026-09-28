@@ -145,6 +145,21 @@ interface ClaimAccessManagerInterface {
   public function extendGrant(int $grant_id, int $additional_days = 30): bool;
 
   /**
+   * Submits an extension request for an access grant.
+   *
+   * @param int $grant_id
+   *   The grant ID.
+   * @param int $additional_days
+   *   The requested additional days.
+   * @param string|null $reason
+   *   The reason or justification for the extension.
+   *
+   * @return bool
+   *   TRUE on success, FALSE otherwise.
+   */
+  public function requestExtension(int $grant_id, int $additional_days = 30, ?string $reason = null): bool;
+
+  /**
    * Deletes a grant permanently from the registry.
    */
   public function deleteGrant(int $grant_id): bool;

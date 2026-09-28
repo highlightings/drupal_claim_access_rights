@@ -29,3 +29,19 @@ claim_access_rights.delete_grant:
     _title: 'Delete Claim Access Grant'
   requirements:
     _permission: 'administer claim access rights'
+
+claim_access_rights.user_request_extension:
+  path: '/user/claims/{grant_id}/request-extension'
+  defaults:
+    _form: '\Drupal\claim_access_rights\Form\ClaimUserExtensionRequestForm'
+    _title: 'Request Access Extension'
+  requirements:
+    _custom_access: '\Drupal\claim_access_rights\Form\ClaimUserExtensionRequestForm::access'
+
+claim_access_rights.my_claims_redirect:
+  path: '/my-claims'
+  defaults:
+    _controller: '\Drupal\claim_access_rights\Controller\MyClaimsRedirectController::redirectMyClaims'
+    _title: 'My Access Claims'
+  requirements:
+    _user_is_logged_in: 'TRUE'

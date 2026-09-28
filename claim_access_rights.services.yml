@@ -7,3 +7,13 @@ services:
       - '@datetime.time'
       - '@cache_tags.invalidator'
       - '@logger.factory'
+
+  claim_access_rights.access_check.user_claims:
+    class: Drupal\claim_access_rights\Access\UserClaimsAccessCheck
+    tags:
+      - { name: access_check, applies_to: _claim_access_user_check }
+
+  claim_access_rights.route_subscriber:
+    class: Drupal\claim_access_rights\Routing\ClaimAccessRightsRouteSubscriber
+    tags:
+      - { name: event_subscriber }

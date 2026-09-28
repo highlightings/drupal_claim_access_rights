@@ -8,7 +8,7 @@ dependencies:
 id: claim_access_grants
 label: 'Sitewide Access Claims'
 module: claim_access_rights
-description: 'Administrative dashboard for viewing and managing claimed entity access rights across the site.'
+description: 'Administrative dashboard and user self-service interface for viewing and managing claimed entity access rights.'
 tag: default
 base_table: claim_access_grants
 base_field: id
@@ -255,7 +255,7 @@ display:
       access:
         type: perm
         options:
-          perm: 'administer claim access rights'
+          perm: 'claim access rights'
       cache:
         type: none
         options: {  }
@@ -271,7 +271,7 @@ display:
           empty: true
           content:
             value: '<p style="padding:24px; text-align:center; color:#64748b;">No access claims found.</p>'
-            format: basic_html
+            format: content_format
           tokenize: false
       sorts:
         created:
@@ -482,12 +482,16 @@ display:
       tags: {  }
   page_1:
     id: page_1
-    display_title: Page
+    display_title: 'Sitewide Dashboard'
     display_plugin: page
     position: 1
     display_options:
       display_extenders: {  }
       path: admin/content/claims
+      access:
+        type: perm
+        options:
+          perm: 'administer claim access rights'
       menu:
         type: tab
         title: 'Access Claims'
@@ -495,6 +499,176 @@ display:
         weight: 10
         menu_name: admin
         context: ''
+    cache_metadata:
+      max-age: 0
+      contexts:
+        - 'languages:language_content'
+        - 'languages:language_interface'
+        - url
+        - url.query_args
+        - user.permissions
+      tags: {  }
+  page_user_claims:
+    id: page_user_claims
+    display_title: 'User Claims'
+    display_plugin: page
+    position: 2
+    display_options:
+      title: 'My Access Claims'
+      display_extenders: {  }
+      path: user/%user/claims
+      access:
+        type: perm
+        options:
+          perm: 'claim access rights'
+      defaults:
+        arguments: false
+        fields: false
+        header: false
+        empty: false
+      menu:
+        type: tab
+        title: 'My Claims'
+        description: 'View your active, pending, and expiring access claims'
+        weight: 15
+        menu_name: account
+        context: ''
+      arguments:
+        uid:
+          id: uid
+          table: claim_access_grants
+          field: uid
+          relationship: none
+          group_type: group
+          admin_label: 'Claimant User ID'
+          plugin_id: numeric
+          default_action: default
+          exception:
+            value: all
+            title_enable: false
+            title: All
+          title_enable: true
+          title: 'My Access Claims'
+          default_argument_type: current_user
+          default_argument_options: {  }
+          summary_options:
+            base_path: ''
+            count: true
+            override: false
+            items_per_page: 25
+          summary:
+            sort_order: asc
+            number_of_records: 0
+            format: default_summary
+          specify_validation: true
+          validate:
+            type: 'entity:user'
+            fail: 'not found'
+          validate_options:
+            bundles: {  }
+            operation: view
+            multiple: 0
+            access: 0
+      fields:
+        entity_target:
+          id: entity_target
+          table: claim_access_grants
+          field: entity_target
+          relationship: none
+          group_type: group
+          admin_label: ''
+          plugin_id: claim_entity_field
+          label: 'Listing / Content'
+          exclude: false
+        rights:
+          id: rights
+          table: claim_access_grants
+          field: rights
+          relationship: none
+          group_type: group
+          admin_label: ''
+          plugin_id: claim_rights_badge
+          label: 'Rights'
+          exclude: false
+        mode:
+          id: mode
+          table: claim_access_grants
+          field: mode
+          relationship: none
+          group_type: group
+          admin_label: ''
+          plugin_id: standard
+          label: 'Mode'
+          exclude: false
+        status:
+          id: status
+          table: claim_access_grants
+          field: status
+          relationship: none
+          group_type: group
+          admin_label: ''
+          plugin_id: claim_status_badge
+          label: 'Status'
+          exclude: false
+        expires_at:
+          id: expires_at
+          table: claim_access_grants
+          field: expires_at
+          relationship: none
+          group_type: group
+          admin_label: ''
+          plugin_id: claim_expiry_badge
+          label: 'Expiration'
+          exclude: false
+        created:
+          id: created
+          table: claim_access_grants
+          field: created
+          relationship: none
+          group_type: group
+          admin_label: ''
+          plugin_id: date
+          label: 'Granted On'
+          exclude: false
+          date_format: short
+        operations:
+          id: operations
+          table: claim_access_grants
+          field: operations
+          relationship: none
+          group_type: group
+          admin_label: ''
+          plugin_id: claim_operations_field
+          label: 'Actions'
+          exclude: false
+      header:
+        area:
+          id: area
+          table: views
+          field: area
+          relationship: none
+          group_type: group
+          admin_label: ''
+          plugin_id: text
+          empty: true
+          content:
+            value: '<div style="background:#f0f9ff; border:1px solid #bae6fd; border-radius:8px; padding:16px 20px; margin-bottom:20px; color:#0369a1;"><h3 style="margin:0 0 6px 0; font-size:16px; font-weight:700;">Your Access Claims</h3><p style="margin:0; font-size:14px; line-height:1.5;">Here you can review your active, pending, or expiring access claims. If your access has expired or is expiring soon, click <strong>Request Extension</strong> to prolong your access permissions.</p></div>'
+            format: content_format
+          tokenize: false
+      empty:
+        area:
+          id: area
+          table: views
+          field: area
+          relationship: none
+          group_type: group
+          admin_label: ''
+          plugin_id: text
+          empty: true
+          content:
+            value: '<div style="padding:40px 20px; text-align:center; color:#64748b;"><p style="font-size:16px; margin:0 0 8px 0;">You do not currently have any claimed listings or content.</p><p style="margin:0; font-size:14px;">Browse listings and click <strong>Claim Access Rights</strong> to request edit or view access.</p></div>'
+            format: content_format
+          tokenize: false
     cache_metadata:
       max-age: 0
       contexts:

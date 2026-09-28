@@ -11,3 +11,10 @@ claim_access_rights.claims_list:
   parent: system.admin_content
   route_name: view.claim_access_grants.page_1
   weight: 50
+
+claim_access_rights.my_claims:
+  title: 'My Access Claims'
+  description: 'View your claimed listings and requested access rights.'
+  menu_name: account
+  route_name: claim_access_rights.my_claims_redirect
+  weight: 20

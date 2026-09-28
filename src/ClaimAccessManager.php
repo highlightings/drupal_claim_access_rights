@@ -450,6 +450,61 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
   /**
    * {@inheritdoc}
    */
+  public function requestExtension(int $grant_id, int $additional_days = 30, ?string $reason = null): bool {
+    $grant = $this->getGrant($grant_id);
+    if (!$grant) {
+      return FALSE;
+    }
+
+    $config = $this->configFactory->get('claim_access_rights.settings');
+    $auto_approve = (bool) ($config->get('user_extension_auto_approve') ?? TRUE);
+
+    $now_date = date('Y-m-d H:i');
+    $existing_notes = (string) ($grant['notes'] ?? '');
+
+    if ($auto_approve) {
+      $this->extendGrant($grant_id, $additional_days);
+      $note_line = "[{$now_date}] Auto-approved extension: +{$additional_days} days." . ($reason ? " Reason: {$reason}" : '');
+      $updated_notes = trim($existing_notes . "\n" . $note_line);
+      $this->database->update('claim_access_grants')
+        ->fields(['notes' => $updated_notes])
+        ->condition('id', $grant_id)
+        ->execute();
+
+      $this->logger->notice('User extension auto-approved for grant @id (+@days days).', [
+        '@id' => $grant_id,
+        '@days' => $additional_days,
+      ]);
+      return TRUE;
+    }
+
+    // Manual approval mode: mark as pending extension review.
+    $note_line = "[{$now_date}] Extension requested: +{$additional_days} days." . ($reason ? " Reason: {$reason}" : '');
+    $updated_notes = trim($existing_notes . "\n" . $note_line);
+    $this->database->update('claim_access_grants')
+      ->fields([
+        'status' => self::STATUS_PENDING,
+        'notes' => $updated_notes,
+      ])
+      ->condition('id', $grant_id)
+      ->execute();
+
+    $this->cacheTagsInvalidator->invalidateTags([
+      $grant['entity_type'] . ':' . $grant['entity_id'],
+      'claim_access_grants',
+    ]);
+
+    $this->logger->notice('User extension requested for grant @id (+@days days, pending review).', [
+      '@id' => $grant_id,
+      '@days' => $additional_days,
+    ]);
+
+    return TRUE;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
   public function deleteGrant(int $grant_id): bool {
     $grant = $this->getGrant($grant_id);
     if (!$grant) {
