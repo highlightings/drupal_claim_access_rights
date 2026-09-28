@@ -1,0 +1,105 @@
+/**
+ * Styles for Claim Access Rights callout and management banners.
+ */
+
+.claim-access-entity-box {
+  margin: 20px 0;
+  padding: 16px 20px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background-color: #f8fafc;
+}
+
+.claim-access-entity-box__inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.claim-access-banner__text {
+  flex: 1 1 300px;
+}
+
+.claim-access-banner__title {
+  display: block;
+  font-size: 1.05em;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.claim-access-banner__title--managed {
+  color: #166534;
+}
+
+.claim-access-banner__title--exclusive {
+  color: #475569;
+}
+
+.claim-access-banner__title--claimable {
+  color: #0f172a;
+}
+
+.claim-access-banner__details {
+  display: block;
+  color: #64748b;
+  font-size: 0.9em;
+  line-height: 1.4;
+}
+
+.claim-access-banner__action {
+  flex-shrink: 0;
+}
+
+.claim-access-banner__btn {
+  display: inline-block;
+  padding: 8px 18px;
+  border-radius: 6px;
+  font-weight: 700;
+  text-decoration: none;
+  font-size: 0.95em;
+  transition: background-color 0.15s ease-in-out;
+}
+
+.claim-access-banner__btn--claim {
+  background-color: #16a34a;
+  color: #ffffff !important;
+}
+
+.claim-access-banner__btn--claim:hover,
+.claim-access-banner__btn--claim:focus {
+  background-color: #15803d;
+  color: #ffffff !important;
+}
+
+.claim-access-banner__btn--edit {
+  background-color: #2563eb;
+  color: #ffffff !important;
+  padding: 8px 16px;
+}
+
+.claim-access-banner__btn--edit:hover,
+.claim-access-banner__btn--edit:focus {
+  background-color: #1d4ed8;
+  color: #ffffff !important;
+}
+
+.claim-access-banner__btn--disabled {
+  background-color: #cbd5e1;
+  color: #64748b;
+  border: 1px solid #94a3b8;
+  cursor: not-allowed;
+}
+
+.claim-access-banner__login-link {
+  color: #2563eb;
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+.claim-access-banner__reason {
+  color: #64748b;
+  font-style: italic;
+  margin: 0;
+}

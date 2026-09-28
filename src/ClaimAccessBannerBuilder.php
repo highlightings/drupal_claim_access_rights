@@ -61,7 +61,9 @@ final class ClaimAccessBannerBuilder implements TrustedCallbackInterface {
       '#type' => 'container',
       '#attributes' => [
         'class' => ['claim-access-entity-box'],
-        'style' => 'margin: 20px 0; padding: 16px; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc;',
+      ],
+      '#attached' => [
+        'library' => ['claim_access_rights/banner'],
       ],
       '#cache' => [
         'contexts' => ['user'],
@@ -76,7 +78,7 @@ final class ClaimAccessBannerBuilder implements TrustedCallbackInterface {
     $inner = [
       '#type' => 'container',
       '#attributes' => [
-        'style' => 'display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;',
+        'class' => ['claim-access-entity-box__inner'],
       ],
     ];
 
@@ -88,11 +90,12 @@ final class ClaimAccessBannerBuilder implements TrustedCallbackInterface {
 
       $inner['text'] = [
         '#type' => 'container',
+        '#attributes' => ['class' => ['claim-access-banner__text']],
         'title' => [
           '#type' => 'html_tag',
           '#tag' => 'strong',
           '#value' => $this->t('✓ You manage this @type', ['@type' => $type_label]),
-          '#attributes' => ['style' => 'color:#166534; font-size:1.05em; display:block; margin-bottom:4px;'],
+          '#attributes' => ['class' => ['claim-access-banner__title', 'claim-access-banner__title--managed']],
         ],
         'details' => [
           '#type' => 'html_tag',
@@ -101,18 +104,21 @@ final class ClaimAccessBannerBuilder implements TrustedCallbackInterface {
             '@rights' => strtoupper((string) $grant['rights']),
             '@expires' => $expires,
           ]),
-          '#attributes' => ['style' => 'color:#64748b; font-size:0.9em;'],
+          '#attributes' => ['class' => ['claim-access-banner__details']],
         ],
       ];
 
       if (in_array('edit', explode(',', (string) $grant['rights']), TRUE) && $entity->hasLinkTemplate('edit-form')) {
         $inner['action'] = [
-          '#type' => 'link',
-          '#title' => $this->t('Edit @type', ['@type' => $type_label]),
-          '#url' => $entity->toUrl('edit-form'),
-          '#attributes' => [
-            'class' => ['button', 'button--primary'],
-            'style' => 'background:#2563eb; color:#fff; padding:8px 16px; border-radius:6px; text-decoration:none; font-weight:600;',
+          '#type' => 'container',
+          '#attributes' => ['class' => ['claim-access-banner__action']],
+          'link' => [
+            '#type' => 'link',
+            '#title' => $this->t('Edit @type', ['@type' => $type_label]),
+            '#url' => $entity->toUrl('edit-form'),
+            '#attributes' => [
+              'class' => ['button', 'button--primary', 'claim-access-banner__btn', 'claim-access-banner__btn--edit'],
+            ],
           ],
         ];
       }
@@ -120,11 +126,12 @@ final class ClaimAccessBannerBuilder implements TrustedCallbackInterface {
     elseif (!empty($info['permanently_claimed'])) {
       $inner['text'] = [
         '#type' => 'container',
+        '#attributes' => ['class' => ['claim-access-banner__text']],
         'title' => [
           '#type' => 'html_tag',
           '#tag' => 'strong',
           '#value' => $this->t('Exclusive Access Granted'),
-          '#attributes' => ['style' => 'color:#475569; display:block; margin-bottom:4px;'],
+          '#attributes' => ['class' => ['claim-access-banner__title', 'claim-access-banner__title--exclusive']],
         ],
         'details' => [
           '#type' => 'html_tag',
@@ -132,18 +139,22 @@ final class ClaimAccessBannerBuilder implements TrustedCallbackInterface {
           '#value' => $this->t('This @type has been claimed indefinitely under exclusive access. New access requests cannot be accepted.', [
             '@type' => strtolower($type_label),
           ]),
-          '#attributes' => ['style' => 'color:#64748b; font-size:0.9em;'],
+          '#attributes' => ['class' => ['claim-access-banner__details']],
         ],
       ];
       $inner['action'] = [
-        '#type' => 'html_tag',
-        '#tag' => 'button',
-        '#value' => (string) $this->t('Claiming Unavailable'),
-        '#attributes' => [
-          'disabled' => 'disabled',
-          'class' => ['button', 'button--disabled'],
-          'style' => 'background:#cbd5e1; color:#64748b; padding:8px 18px; border-radius:6px; font-weight:bold; border:1px solid #94a3b8; cursor:not-allowed;',
-          'title' => (string) $this->t('Claiming is not possible for content with indefinite exclusive access.'),
+        '#type' => 'container',
+        '#attributes' => ['class' => ['claim-access-banner__action']],
+        'button' => [
+          '#type' => 'html_tag',
+          '#tag' => 'button',
+          '#value' => (string) $this->t('Claiming Unavailable'),
+          '#attributes' => [
+            'type' => 'button',
+            'disabled' => 'disabled',
+            'class' => ['button', 'button--disabled', 'claim-access-banner__btn', 'claim-access-banner__btn--disabled'],
+            'title' => (string) $this->t('Claiming is not possible for content with indefinite exclusive access.'),
+          ],
         ],
       ];
     }
@@ -153,14 +164,18 @@ final class ClaimAccessBannerBuilder implements TrustedCallbackInterface {
 
       $inner['text'] = [
         '#type' => 'container',
+        '#attributes' => ['class' => ['claim-access-banner__text']],
         'prompt' => [
-          '#markup' => '<strong>' . $this->t('Want to manage this @type?', ['@type' => strtolower($type_label)]) . '</strong> ',
+          '#type' => 'html_tag',
+          '#tag' => 'strong',
+          '#value' => $this->t('Want to manage this @type?', ['@type' => strtolower($type_label)]),
+          '#suffix' => ' ',
         ],
         'login' => [
           '#type' => 'link',
           '#title' => $this->t('Log in to claim access'),
           '#url' => $login_url,
-          '#attributes' => ['style' => 'color:#2563eb; font-weight:bold;'],
+          '#attributes' => ['class' => ['claim-access-banner__login-link']],
         ],
       ];
     }
@@ -179,35 +194,39 @@ final class ClaimAccessBannerBuilder implements TrustedCallbackInterface {
 
       $inner['text'] = [
         '#type' => 'container',
+        '#attributes' => ['class' => ['claim-access-banner__text']],
         'title' => [
           '#type' => 'html_tag',
           '#tag' => 'strong',
           '#value' => $this->t('Is this your @type?', ['@type' => strtolower($type_label)]),
-          '#attributes' => ['style' => 'display:block; margin-bottom:4px;'],
+          '#attributes' => ['class' => ['claim-access-banner__title', 'claim-access-banner__title--claimable']],
         ],
         'details' => [
           '#type' => 'html_tag',
           '#tag' => 'span',
           '#value' => $notice_text,
-          '#attributes' => ['style' => 'color:#64748b; font-size:0.9em;'],
+          '#attributes' => ['class' => ['claim-access-banner__details']],
         ],
       ];
       $inner['action'] = [
-        '#type' => 'link',
-        '#title' => $this->t('Claim This @type', ['@type' => $type_label]),
-        '#url' => $claim_url,
-        '#attributes' => [
-          'class' => ['button', 'button--primary', 'claim-entity-btn'],
-          'style' => 'background:#16a34a; color:#fff; padding:8px 18px; border-radius:6px; text-decoration:none; font-weight:bold;',
+        '#type' => 'container',
+        '#attributes' => ['class' => ['claim-access-banner__action']],
+        'link' => [
+          '#type' => 'link',
+          '#title' => $this->t('Claim This @type', ['@type' => $type_label]),
+          '#url' => $claim_url,
+          '#attributes' => [
+            'class' => ['button', 'button--primary', 'claim-entity-btn', 'claim-access-banner__btn', 'claim-access-banner__btn--claim'],
+          ],
         ],
       ];
     }
     else {
       $inner['text'] = [
         '#type' => 'html_tag',
-        '#tag' => 'em',
+        '#tag' => 'p',
         '#value' => (string) ($info['reason'] ?? ''),
-        '#attributes' => ['style' => 'color:#64748b;'],
+        '#attributes' => ['class' => ['claim-access-banner__reason']],
       ];
     }
 

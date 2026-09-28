@@ -509,6 +509,10 @@ final class ClaimAccessManagerTest extends KernelTestBase {
     $this->assertNotEmpty($banner_anon);
     $this->assertSame('container', $banner_anon['#type']);
     $this->assertArrayHasKey('#cache', $banner_anon);
+    $this->assertArrayHasKey('#attached', $banner_anon);
+    $this->assertContains('claim_access_rights/banner', $banner_anon['#attached']['library']);
+    $this->assertArrayNotHasKey('#markup', $banner_anon['content']['text']['prompt']);
+    $this->assertSame('strong', $banner_anon['content']['text']['prompt']['#tag']);
 
     // 2. Grant access so current user is claimant.
     $this->manager->grantAccess('node', (int) $this->node->id(), (int) $user->id(), ['view', 'edit']);
