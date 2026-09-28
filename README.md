@@ -25,6 +25,8 @@ A comprehensive, enterprise-grade access control and reservation system for Drup
 - [Developer API & Architecture](#developer-api--architecture)
   - [Service: `claim_access_rights.manager`](#service-claim_access_rightsmanager)
   - [Access Hook Integration](#access-hook-integration)
+  - [Access Model: Additive vs. Restrictive](#access-model-additive-vs-restrictive)
+  - [Concurrency & Shared Lock Backend Requirement](#concurrency--shared-lock-backend-requirement)
   - [Database Schema](#database-schema)
 - [Troubleshooting & Cron](#troubleshooting--cron)
 - [License](#license)
@@ -259,6 +261,35 @@ function claim_access_rights_entity_access(EntityInterface $entity, string $oper
 }
 ```
 
+### Access Model: Additive vs. Restrictive
+
+The access control model implemented by Claim Access Rights is **strictly additive**:
+
+- **Grants Access (`AccessResult::allowed()`)**: When an authenticated user holds an active, currently effective grant (`starts_at <= now < expires_at`) for the requested operation (`view` or `update`), the module returns `AccessResult::allowed()`.
+- **Defers Otherwise (`AccessResult::neutral()`)**: If no active grant applies to the current user, the module returns `AccessResult::neutral()`, leaving the access decision entirely to Drupal core and other contributed access modules.
+- **Never Restrictive (`AccessResult::forbidden()`)**: The module **never** issues `AccessResult::forbidden()`.
+
+#### Key Architectural Implications:
+1. **Preserves Existing Administrative & Role Access**: Users who already possess permissions from standard Drupal roles (such as Administrators, Content Editors, or authors with "edit own" permissions) retain access regardless of claim states or durations. The module never strips away or restricts access granted elsewhere.
+2. **Cannot Override Explicit Denials**: If another module or Drupal core access check returns `AccessResult::forbidden()` (for example, an unpublished node viewed by an account without "view own unpublished" permission), Claim Access Rights cannot bypass that restriction; in Drupal's access architecture, any `forbidden()` result always trumps `allowed()`.
+3. **Additive Scope**: Claim Access Rights is specifically designed to elevate authenticated users into temporary or indefinite stewards for designated items without requiring elevated site-wide administrative roles.
+
+### Concurrency & Shared Lock Backend Requirement
+
+To prevent race conditions—such as two concurrent requests simultaneously reserving the same exclusive date window or corrupting replace-mode transitions—all critical write operations (`grantAccess()`, `extendGrant()`) acquire a per-entity lock via Drupal's `lock` service:
+
+```php
+$name = 'claim_access_rights:' . $entity_type . ':' . $entity_id;
+if (!$this->lock->acquire($name, 5.0)) {
+  throw new \RuntimeException('Could not obtain a lock for this item. Please try again.');
+}
+```
+
+#### Infrastructure Requirements for Multi-Server Deployments:
+- **Default Database Backend**: On single-server or standard Drupal installations, Drupal core's default database semaphore backend (`DatabaseStorage` operating on the `{semaphore}` table) provides synchronization across processes out-of-the-box.
+- **Shared Lock Backend Required**: In clustered, containerized (e.g., Kubernetes), or load-balanced environments with multiple web application nodes (webheads / PHP-FPM containers), sites **must ensure a shared lock backend** is configured (e.g., the default shared database lock service, Redis, or Memcache).
+- **Avoid Local Memory Locks**: If the site configures a node-local lock implementation (such as APCu memory lock), locks will not synchronize across independent servers. In such configurations, concurrent requests on different servers could lead to overlapping exclusive grants.
+
 ### Database Schema
 
 Grants are stored in the `{claim_access_grants}` table:
@@ -277,12 +308,14 @@ Grants are stored in the `{claim_access_grants}` table:
 | `expires_at` | `int unsigned` | Timestamp when grant expires (`0` = indefinite). |
 | `submission_id` | `int unsigned` | Optional webform submission ID. |
 | `notes` | `text` | Notes or verification comments. |
+| `extension_requested` | `tinyint unsigned` | Flag indicating an extension request is pending admin review: `1` = pending, `0` = none. |
 
 **Indexes**:
 - `entity_target`: `['entity_type', 'entity_id', 'status']`
 - `user_grants`: `['uid', 'status']`
 - `status_expiry`: `['status', 'expires_at']`
 - `date_range`: `['entity_type', 'entity_id', 'status', 'starts_at', 'expires_at']`
+- `pending_extension`: `['extension_requested', 'status']`
 
 ---
 

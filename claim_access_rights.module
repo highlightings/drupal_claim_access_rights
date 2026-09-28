@@ -18,7 +18,12 @@ use Drupal\Core\Url;
 /**
  * Implements hook_entity_access().
  *
- * Provides universal access control for nodes, custom blocks, media, taxonomy, etc.
+ * Provides additive access control for nodes, custom blocks, media, taxonomy, etc.
+ *
+ * Note: This access check is purely additive: it returns AccessResult::allowed()
+ * when an account holds an active claim grant, and AccessResult::neutral()
+ * otherwise. It never returns AccessResult::forbidden(), meaning existing
+ * administrative or role-based permissions granted elsewhere remain unaffected.
  */
 function claim_access_rights_entity_access(EntityInterface $entity, string $operation, AccountInterface $account): AccessResultInterface {
   /** @var \Drupal\claim_access_rights\ClaimAccessManagerInterface $manager */

@@ -958,6 +958,12 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
 
   /**
    * Runs a callback while holding a per-entity lock.
+   *
+   * Infrastructure Requirement:
+   * Sites operating across multiple web servers or clustered PHP-FPM containers
+   * must configure a shared lock backend (such as Drupal core's default database
+   * semaphore or a shared Redis/Memcache lock backend) to serialize concurrent
+   * claims across all server nodes.
    */
   private function withEntityLock(string $entity_type, int $entity_id, callable $callback): mixed {
     $name = 'claim_access_rights:' . $entity_type . ':' . $entity_id;
