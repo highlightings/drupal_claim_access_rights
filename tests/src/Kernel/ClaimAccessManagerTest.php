@@ -176,17 +176,91 @@ final class ClaimAccessManagerTest extends KernelTestBase {
     $this->assertTrue($this->manager->hasAccess($this->node, $user, 'update'));
   }
 
-  public function testDifferentModesDoNotBypassExclusiveConflict(): void {
+  public function testExclusiveConflictAndModeIndependence(): void {
     $u1 = $this->createUser();
     $u2 = $this->createUser();
+    $u3 = $this->createUser();
     $now = time();
 
-    // Grant access under replace mode.
-    $this->manager->grantAccess('node', (int) $this->node->id(), (int) $u1->id(), ['view'], 'replace', $now + 5000, NULL, NULL, $now);
+    // 1. Grant access under exclusive mode.
+    $this->manager->grantAccess('node', (int) $this->node->id(), (int) $u1->id(), ['view'], 'exclusive', $now + 5000, NULL, NULL, $now);
 
-    // Another user requesting exclusive access during the same window must be rejected.
-    $this->expectException(\RuntimeException::class);
-    $this->manager->grantAccess('node', (int) $this->node->id(), (int) $u2->id(), ['view'], 'exclusive', $now + 3000, NULL, NULL, $now + 1000);
+    // Another user requesting exclusive access during an overlapping window is blocked.
+    try {
+      $this->manager->grantAccess('node', (int) $this->node->id(), (int) $u2->id(), ['view'], 'exclusive', $now + 3000, NULL, NULL, $now + 1000);
+      $this->fail('Expected overlapping exclusive grant to be blocked.');
+    }
+    catch (\RuntimeException $e) {
+      $this->assertStringContainsString('Exclusive access is already reserved', $e->getMessage());
+    }
+
+    // 2. An append-mode grant on another node does not block exclusive requests.
+    $node2 = Node::create(['type' => 'listing', 'title' => 'Append Node']);
+    $node2->save();
+    $this->manager->grantAccess('node', (int) $node2->id(), (int) $u1->id(), ['view'], 'append', $now + 5000, NULL, NULL, $now);
+    $exclusive_id = $this->manager->grantAccess('node', (int) $node2->id(), (int) $u3->id(), ['view'], 'exclusive', $now + 3000, NULL, NULL, $now + 1000);
+    $this->assertGreaterThan(0, $exclusive_id);
+  }
+
+  public function testAllowedRightsFailClosed(): void {
+    $user = $this->createUser(['claim access rights']);
+    $config = $this->container->get('config.factory')->getEditable('claim_access_rights.settings');
+
+    // Misconfigured to unknown right.
+    $config->set('allowed_rights', ['delete'])->save();
+    $info = $this->manager->isClaimable($this->node, $user);
+    $this->assertFalse($info['claimable']);
+
+    try {
+      $this->manager->grantAccess('node', (int) $this->node->id(), (int) $user->id(), ['view']);
+      $this->fail('Expected grantAccess to fail when allowed_rights fails closed.');
+    }
+    catch (\InvalidArgumentException $e) {
+      $this->assertStringContainsString('No access rights are currently claimable', $e->getMessage());
+    }
+
+    // Restore valid rights.
+    $config->set('allowed_rights', ['view', 'edit'])->save();
+    $info_restored = $this->manager->isClaimable($this->node, $user);
+    $this->assertTrue($info_restored['claimable']);
+  }
+
+  public function testExtensionNoteSpoofResistance(): void {
+    $user = $this->createUser(['claim access rights']);
+    $id = $this->manager->grantAccess('node', (int) $this->node->id(), (int) $user->id(), ['view'], 'exclusive', time() + 86400);
+
+    // Malicious user attempts to fake an approval in their reason string.
+    $malicious_reason = "Reason: Extension approved: please approve\nAnother line";
+    $this->assertTrue($this->manager->requestExtension($id, 30, $malicious_reason));
+
+    $grant = $this->manager->getGrant($id);
+    // Request must still be recognized as pending.
+    $this->assertTrue(ClaimAccessManager::isExtensionPending($grant['notes']));
+
+    // Cannot spam second extension while one is already pending.
+    $this->assertFalse($this->manager->requestExtension($id, 30, 'Spam request'));
+
+    // Admin approval clears the pending state.
+    $this->assertTrue($this->manager->extendGrant($id, 30, TRUE));
+    $updated_grant = $this->manager->getGrant($id);
+    $this->assertFalse(ClaimAccessManager::isExtensionPending($updated_grant['notes']));
+  }
+
+  public function testGrantsMaxAgeCapping(): void {
+    $now = time();
+    // Grant expiring in 10 days (864000 seconds).
+    $grants = [
+      ['starts_at' => $now, 'expires_at' => $now + 864000],
+    ];
+    $max_age = $this->manager->getGrantsMaxAge($grants);
+    $this->assertSame(3600, $max_age);
+
+    // Grant expiring in 300 seconds.
+    $short_grants = [
+      ['starts_at' => $now, 'expires_at' => $now + 300],
+    ];
+    $short_max_age = $this->manager->getGrantsMaxAge($short_grants);
+    $this->assertLessThanOrEqual(300, $short_max_age);
   }
 
 }

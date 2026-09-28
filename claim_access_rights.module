@@ -73,14 +73,19 @@ function claim_access_rights_entity_delete(EntityInterface $entity): void {
   if ($entity_type_id === 'user') {
     $manager->deleteGrantsForUser((int) $entity->id());
   }
-
-  $manager->deleteGrantsForEntity($entity_type_id, (int) $entity->id());
+  else {
+    $manager->deleteGrantsForEntity($entity_type_id, (int) $entity->id());
+  }
 }
 
 /**
  * Implements hook_entity_trash_delete().
  *
- * Automatically cleans up claim access grants when an entity is soft-deleted to trash.
+ * Automatically cleans up claim access grants when an entity is soft-deleted
+ * to trash by the contrib Trash module.
+ *
+ * @see https://www.drupal.org/project/trash
+ * @see \Drupal\trash\TrashStorageTrait::delete()
  */
 function claim_access_rights_entity_trash_delete(EntityInterface $entity): void {
   claim_access_rights_entity_delete($entity);
@@ -89,7 +94,7 @@ function claim_access_rights_entity_trash_delete(EntityInterface $entity): void 
 /**
  * Implements hook_entity_view().
  *
- * Injects claim callout or management banner on enabled entity view displays.
+ * Injects claim callout or management banner via lazy builder on enabled entity view displays.
  */
 function claim_access_rights_entity_view(array &$build, EntityInterface $entity, EntityViewDisplayInterface $display, string $view_mode): void {
   // Only display on full or default view modes.
@@ -110,121 +115,15 @@ function claim_access_rights_entity_view(array &$build, EntityInterface $entity,
     return;
   }
 
-  $current_user = \Drupal::currentUser();
-  $info = $manager->isClaimable($entity, $current_user);
-
-  $entity_label = $entity->label() ?: ($entity_type_id . ' #' . $entity->id());
-  $type_label = ucfirst(str_replace('_', ' ', $entity_type_id));
-
-  $container = [
-    '#type' => 'container',
-    '#attributes' => [
-      'class' => ['claim-access-entity-box'],
-      'style' => 'margin: 20px 0; padding: 16px; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc;',
+  // Defer execution using lazy builder so cached pages avoid running queries.
+  $build['claim_access_box'] = [
+    '#lazy_builder' => [
+      'claim_access_rights.banner_builder:buildBanner',
+      [$entity_type_id, (int) $entity->id()],
     ],
+    '#create_placeholder' => TRUE,
     '#weight' => 50,
-    // The banner depends on the viewer and on every grant on this entity, and
-    // changes when any of them starts or ends.
-    '#cache' => [
-      'contexts' => ['user'],
-      'tags' => [
-        'config:claim_access_rights.settings',
-        ClaimAccessManager::entityTag($entity_type_id, (string) $entity->id()),
-      ],
-      'max-age' => $manager->getGrantsMaxAge($info['active_grants'] ?? []),
-    ],
   ];
-
-  if (!empty($info['user_is_claimant'])) {
-    $grant = $info['grant'];
-    $expires = (int) $grant['expires_at'] > 0
-      ? \Drupal::service('date.formatter')->format((int) $grant['expires_at'], 'short')
-      : (string) t('Never');
-
-    $html = '<div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">';
-    $html .= '<div>';
-    $html .= '<strong style="color:#166534; font-size:1.05em;">✓ You manage this ' . htmlspecialchars($type_label) . '</strong><br>';
-    $html .= '<span style="color:#64748b; font-size:0.9em;">Granted Rights: ' . htmlspecialchars(strtoupper((string) $grant['rights'])) . ' | Expires: ' . htmlspecialchars($expires) . '</span>';
-    $html .= '</div>';
-
-    if (in_array('edit', explode(',', (string) $grant['rights']), TRUE) && $entity->hasLinkTemplate('edit-form')) {
-      $edit_url = $entity->toUrl('edit-form')->toString();
-      $html .= '<a href="' . $edit_url . '" class="button button--primary" style="background:#2563eb; color:#fff; padding:8px 16px; border-radius:6px; text-decoration:none; font-weight:600;">Edit ' . htmlspecialchars($type_label) . '</a>';
-    }
-    $html .= '</div>';
-
-    $container['content'] = [
-      '#type' => 'inline_template',
-      '#template' => '{{ html|raw }}',
-      '#context' => ['html' => $html],
-    ];
-  }
-  elseif (!empty($info['permanently_claimed'])) {
-    $html = '<div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">';
-    $html .= '<div>';
-    $html .= '<strong style="color:#475569;">Exclusive Access Granted</strong><br>';
-    $html .= '<span style="color:#64748b; font-size:0.9em;">This ' . htmlspecialchars(strtolower($type_label)) . ' has been claimed indefinitely under exclusive access. New access requests cannot be accepted.</span>';
-    $html .= '</div>';
-    $html .= '<button disabled class="button button--disabled" style="background:#cbd5e1; color:#64748b; padding:8px 18px; border-radius:6px; font-weight:bold; border:1px solid #94a3b8; cursor:not-allowed;" title="Claiming is not possible for content with indefinite exclusive access.">Claiming Unavailable</button>';
-    $html .= '</div>';
-
-    $container['content'] = [
-      '#type' => 'inline_template',
-      '#template' => '{{ html|raw }}',
-      '#context' => ['html' => $html],
-    ];
-  }
-  elseif ($current_user->isAnonymous()) {
-    $destination = $entity->hasLinkTemplate('canonical') ? $entity->toUrl()->toString() : '';
-    $login_url = Url::fromRoute('user.login', [], ['query' => $destination ? ['destination' => $destination] : []])->toString();
-    $html = sprintf(
-      '<div><strong>Want to manage this %s?</strong> <a href="%s" style="color:#2563eb; font-weight:bold;">Log in to claim access</a>.</div>',
-      htmlspecialchars(strtolower($type_label)),
-      $login_url
-    );
-    $container['content'] = [
-      '#type' => 'inline_template',
-      '#template' => '{{ html|raw }}',
-      '#context' => ['html' => $html],
-    ];
-  }
-  elseif ($info['claimable']) {
-    $claim_url = Url::fromRoute('entity.webform.canonical', ['webform' => 'claim_listing'], [
-      'query' => [
-        'target_entity_type' => $entity_type_id,
-        'target_entity_id' => $entity->id(),
-        'target_entity_title' => $entity_label,
-      ],
-    ])->toString();
-
-    $notice_text = !empty($info['has_exclusive_windows'])
-      ? 'Exclusive access is active for specific dates. You can claim access for non-overlapping dates.'
-      : 'Claim view and edit rights to manage details and updates.';
-
-    $html = '<div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">';
-    $html .= '<div>';
-    $html .= '<strong>Is this your ' . htmlspecialchars(strtolower($type_label)) . '?</strong><br>';
-    $html .= '<span style="color:#64748b; font-size:0.9em;">' . htmlspecialchars($notice_text) . '</span>';
-    $html .= '</div>';
-    $html .= '<a href="' . $claim_url . '" class="button button--primary claim-entity-btn" style="background:#16a34a; color:#fff; padding:8px 18px; border-radius:6px; text-decoration:none; font-weight:bold;">Claim This ' . htmlspecialchars($type_label) . '</a>';
-    $html .= '</div>';
-
-    $container['content'] = [
-      '#type' => 'inline_template',
-      '#template' => '{{ html|raw }}',
-      '#context' => ['html' => $html],
-    ];
-  }
-  else {
-    $html = '<div style="color:#64748b;"><em>' . htmlspecialchars($info['reason']) . '</em></div>';
-    $container['content'] = [
-      '#type' => 'inline_template',
-      '#template' => '{{ html|raw }}',
-      '#context' => ['html' => $html],
-    ];
-  }
-
-  $build['claim_access_box'] = $container;
 }
 
 /**

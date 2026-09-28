@@ -73,8 +73,7 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
     ?int $expires_at = null,
     ?string $notes = null,
     ?int $submission_id = null,
-    ?int $starts_at = null,
-    ?EntityInterface $entity = null
+    ?int $starts_at = null
   ): int {
     $config = $this->configFactory->get('claim_access_rights.settings');
     $mode = $mode ?: (string) $config->get('claim_mode') ?: self::MODE_EXCLUSIVE;
@@ -100,18 +99,20 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
     if ($uid <= 0 || $entity_id <= 0) {
       throw new \InvalidArgumentException('A valid user and entity ID are required.');
     }
-    if (!$entity) {
-      $entity = $this->entityTypeManager->hasDefinition($entity_type)
-        ? $this->entityTypeManager->getStorage($entity_type)->load($entity_id)
-        : NULL;
+    if (!$this->entityTypeManager->hasDefinition($entity_type)) {
+      throw new \InvalidArgumentException('The target entity cannot be claimed.');
     }
-    if (!$entity || $entity->getEntityTypeId() !== $entity_type || (int) $entity->id() !== $entity_id || !$this->isEntityTypeBundleEnabled($entity_type, $entity->bundle())) {
+    $entity = $this->entityTypeManager->getStorage($entity_type)->load($entity_id);
+    if (!$entity || (int) $entity->id() !== $entity_id || !$this->isEntityTypeBundleEnabled($entity_type, $entity->bundle())) {
       throw new \InvalidArgumentException('The target entity cannot be claimed.');
     }
     if ($expires_at > 0 && $expires_at < $starts_at) {
       throw new \InvalidArgumentException('The end of the access window is before its start.');
     }
     $allowed_rights = $this->getAllowedRights();
+    if (empty($allowed_rights)) {
+      throw new \InvalidArgumentException('No access rights are currently claimable.');
+    }
     $rights = array_values(array_unique(array_filter($rights)));
     if (empty($rights)) {
       $rights = $allowed_rights;
@@ -227,7 +228,8 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       ->fields('c')
       ->condition('entity_type', $entity_type)
       ->condition('entity_id', $entity_id)
-      ->condition('status', self::STATUS_ACTIVE);
+      ->condition('status', self::STATUS_ACTIVE)
+      ->condition('mode', self::MODE_EXCLUSIVE);
 
     if ($exclude_grant_id) {
       $query->condition('id', $exclude_grant_id, '<>');
@@ -314,6 +316,15 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       return [
         'claimable' => FALSE,
         'reason' => sprintf('Claiming is not enabled for %s (%s).', $entity_type, $bundle),
+        'mode' => self::MODE_EXCLUSIVE,
+        'active_grants' => [],
+      ];
+    }
+
+    if (empty($this->getAllowedRights())) {
+      return [
+        'claimable' => FALSE,
+        'reason' => 'No access rights are currently claimable.',
         'mode' => self::MODE_EXCLUSIVE,
         'active_grants' => [],
       ];
@@ -538,11 +549,20 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
 
     $config = $this->configFactory->get('claim_access_rights.settings');
     $auto_approve = (bool) $config->get('user_extension_auto_approve');
+    $existing_notes = (string) ($grant['notes'] ?? '');
+
+    // Disallow submitting a new extension request if one is already pending.
+    if (!$auto_approve && self::isExtensionPending($existing_notes)) {
+      return FALSE;
+    }
+
     $reason = $reason !== null ? mb_substr(trim($reason), 0, 1000) : '';
+    // Strip newlines and brackets to prevent spoofing system note line prefixes.
+    $reason = preg_replace('/[\[\]\r\n]/', ' ', $reason);
+    $reason = trim(preg_replace('/\s+/', ' ', $reason));
 
     $now = $this->time->getRequestTime();
     $now_date = date('Y-m-d H:i', $now);
-    $existing_notes = (string) ($grant['notes'] ?? '');
 
     if ($auto_approve) {
       // Total lifetime of a self-service grant stays within max_claim_days.
@@ -762,10 +782,16 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
       ->condition('status', self::STATUS_ACTIVE)
       ->execute();
 
-    // Access results are tagged per entity, so invalidate exactly those.
+    // Access results are tagged per entity, so batch invalidate tags across all rows.
+    $this->userGrantIndex = [];
+    $tags = ['claim_access_grants'];
     foreach ($rows as $row) {
-      $this->invalidateGrantCaches((string) $row['entity_type'], (int) $row['entity_id']);
+      $entity_type = (string) $row['entity_type'];
+      $entity_id = (string) $row['entity_id'];
+      $tags[] = $entity_type . ':' . $entity_id;
+      $tags[] = self::entityTag($entity_type, $entity_id);
     }
+    $this->cacheTagsInvalidator->invalidateTags(array_values(array_unique($tags)));
     $this->logger->info('Purged @count expired claim access grants.', ['@count' => $updated]);
 
     return $updated;
@@ -851,7 +877,9 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
         }
       }
     }
-    return $max_age;
+    // For time-limited grants, cap max-age at 3600 seconds (1 hour) as defense-in-depth
+    // to bound staleness if a grant is mutated without tag invalidation.
+    return ($max_age === Cache::PERMANENT) ? Cache::PERMANENT : min($max_age, 3600);
   }
 
   /**
@@ -868,9 +896,13 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
    */
   private function getAllowedRights(): array {
     $known = [self::RIGHT_VIEW, self::RIGHT_EDIT];
-    $configured = (array) $this->configFactory->get('claim_access_rights.settings')->get('allowed_rights');
-    $allowed = array_values(array_intersect($known, $configured));
-    return $allowed ?: $known;
+    $configured = $this->configFactory->get('claim_access_rights.settings')->get('allowed_rights');
+    // If the setting was never configured at all (NULL), fallback to default known rights.
+    if ($configured === NULL) {
+      return $known;
+    }
+    // Misconfigured or empty configuration fails closed.
+    return array_values(array_intersect($known, (array) $configured));
   }
 
   /**
@@ -904,14 +936,20 @@ final class ClaimAccessManager implements ClaimAccessManagerInterface {
     if (!$notes) {
       return FALSE;
     }
-    $last_req = strrpos($notes, 'Extension requested:');
-    if ($last_req === FALSE) {
-      return FALSE;
+    // Parse notes line-by-line to prevent spoofing by user-supplied reason text.
+    $lines = preg_split('/\r\n|\r|\n/', $notes);
+    $pending_count = 0;
+    foreach ($lines as $line) {
+      $line = trim($line);
+      // Strictly match system-formatted event prefixes at the start of the line.
+      if (preg_match('/^\[\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?\]\s*Extension requested:/i', $line)) {
+        $pending_count++;
+      }
+      elseif (preg_match('/^\[\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?\]\s*(?:Extension approved|Auto-approved extension):/i', $line)) {
+        $pending_count = max(0, $pending_count - 1);
+      }
     }
-    $last_app = strrpos($notes, 'Extension approved:');
-    $last_auto = strrpos($notes, 'Auto-approved extension:');
-    $resolved_pos = max($last_app === FALSE ? -1 : $last_app, $last_auto === FALSE ? -1 : $last_auto);
-    return $last_req > $resolved_pos;
+    return $pending_count > 0;
   }
 
   /**

@@ -19,3 +19,11 @@ services:
     class: Drupal\claim_access_rights\Routing\ClaimAccessRightsRouteSubscriber
     tags:
       - { name: event_subscriber }
+
+  claim_access_rights.banner_builder:
+    class: Drupal\claim_access_rights\ClaimAccessBannerBuilder
+    arguments:
+      - '@claim_access_rights.manager'
+      - '@entity_type.manager'
+      - '@current_user'
+      - '@date.formatter'
