@@ -121,7 +121,9 @@ Navigate to **Administration > Configuration > People > Claim Access Rights** (`
    - Specify the default duration in days (e.g. `30` days, or set to `0` for indefinite access by default).
 4. **Abuse protection & limits**: permanent claims (off by default), maximum window in days, maximum active claims per user, and whether claimant extension requests are auto-approved (off by default). Fresh installs default to restrictive values; `hook_update_10002` keeps permissive values on existing sites so nothing changes silently.
 5. **Auto-Approval**:
-   - Check **Auto-approve claims immediately** to bypass manual review and grant access instantly upon form submission, or leave unchecked to process approvals through ECA workflows or administrator moderation.
+   - **Immediate**: grants access instantly on form submission.
+   - **ECA**: processed by the bundled ECA workflow (the default).
+   - **Manual**: nothing is granted automatically. Review submissions at **Content › Pending Access Claims** (`/admin/content/claims/pending`, requires the *Administer claim access rights* permission) and Approve or Reject each one. Approving runs the exact same checks (claim permission, window limits, per-user cap, exclusivity) as the other two modes, so a claim that would be rejected automatically cannot be waved through manually by accident.
 
 ---
 

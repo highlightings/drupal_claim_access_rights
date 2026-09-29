@@ -12,6 +12,13 @@ claim_access_rights.claims_list:
   route_name: view.claim_access_grants.page_1
   weight: 50
 
+claim_access_rights.pending_claims:
+  title: 'Pending Access Claims'
+  description: 'Approve or reject access claims that are waiting for review.'
+  parent: system.admin_content
+  route_name: claim_access_rights.pending
+  weight: 51
+
 claim_access_rights.my_claims:
   title: 'My Access Claims'
   description: 'View your claimed listings and requested access rights.'

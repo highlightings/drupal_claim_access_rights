@@ -10,6 +10,12 @@ services:
       - '@lock'
       - '@entity_type.manager'
 
+  claim_access_rights.submission_processor:
+    class: Drupal\claim_access_rights\ClaimSubmissionProcessor
+    arguments:
+      - '@claim_access_rights.manager'
+      - '@entity_type.manager'
+
   claim_access_rights.access_check.user_claims:
     class: Drupal\claim_access_rights\Access\UserClaimsAccessCheck
     tags:

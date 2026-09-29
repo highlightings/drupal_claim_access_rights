@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Drupal\claim_access_rights\Plugin\WebformHandler;
 
 use Drupal\claim_access_rights\ClaimAccessManagerInterface;
+use Drupal\claim_access_rights\ClaimSubmissionProcessor;
 use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Form\FormStateInterface;
@@ -35,6 +36,7 @@ final class ClaimAccessWebformHandler extends WebformHandlerBase implements Cont
     $plugin_id,
     $plugin_definition,
     private readonly ClaimAccessManagerInterface $claimAccessManager,
+    private readonly ClaimSubmissionProcessor $processor,
     private readonly AccountProxyInterface $currentUser,
     EntityTypeManagerInterface $entityTypeManager,
     ConfigFactoryInterface $configFactory,
@@ -60,6 +62,7 @@ final class ClaimAccessWebformHandler extends WebformHandlerBase implements Cont
       $plugin_id,
       $plugin_definition,
       $container->get('claim_access_rights.manager'),
+      $container->get('claim_access_rights.submission_processor'),
       $container->get('current_user'),
       $container->get('entity_type.manager'),
       $container->get('config.factory'),
@@ -135,54 +138,19 @@ final class ClaimAccessWebformHandler extends WebformHandlerBase implements Cont
     $config = $this->configFactory->get('claim_access_rights.settings');
     $mode = (string) $config->get('auto_approval_mode') ?: 'eca';
 
-    $data = $webform_submission->getData();
-    $entity_id = (int) ($data['target_entity_id'] ?? 0);
-    $entity_type = (string) ($data['target_entity_type'] ?? 'node');
-    $uid = (int) $webform_submission->getOwnerId();
-
-    $rights = $data['requested_rights'] ?? ['view', 'edit'];
-    if (is_string($rights)) {
-      $rights = explode(',', $rights);
-    }
-    $rights = array_values(array_filter((array) $rights));
-    $notes = (string) ($data['claim_notes'] ?? '');
-
     if ($mode === 'immediate') {
       try {
-        // Defence in depth: this hook also runs for submissions that bypassed
-        // the form (API, imports), so re-check the window and the user's cap.
-        $starts_at = !empty($data['start_date']) ? strtotime((string) $data['start_date']) : $webform_submission->getCreatedTime();
-        $expires_at = !empty($data['no_end_date']) ? 0 : (!empty($data['end_date']) ? strtotime((string) $data['end_date'] . ' 23:59:59') : FALSE);
-        if ($starts_at === FALSE || $expires_at === FALSE) {
-          throw new \InvalidArgumentException('Invalid access dates.');
-        }
-        $error = $this->claimAccessManager->validateClaimWindow((int) $starts_at, (int) $expires_at)
-          ?? $this->claimAccessManager->validateUserClaimLimit($uid);
-        if ($error !== NULL) {
-          throw new \InvalidArgumentException($error);
-        }
-
-        $this->claimAccessManager->grantAccess(
-          $entity_type,
-          $entity_id,
-          $uid,
-          $rights,
-          null,
-          (int) $expires_at,
-          $notes,
-          (int) $webform_submission->id(),
-          (int) $starts_at
-        );
+        $this->processor->approve($webform_submission);
         $this->messenger->addStatus($this->t('Your claim has been immediately approved! You now have access rights to this listing.'));
       }
       catch (\InvalidArgumentException $e) {
-        // These messages are safe, translated validation text or generic.
-        $this->messenger->addError($this->t('Your claim could not be approved. Please check the requested dates and rights.'));
+        // Validation text is safe and specific, e.g. "maximum access window".
+        $this->messenger->addError($this->t('Your claim could not be approved: @reason', ['@reason' => $e->getMessage()]));
         \Drupal::logger('claim_access_rights')->warning('Immediate claim rejected: @msg', ['@msg' => $e->getMessage()]);
       }
       catch (\Throwable $e) {
-        // Never echo exception text to the visitor: it can carry SQL, internal
-        // paths or other users' reservation details.
+        // Never echo other exception text to the visitor: it can carry SQL,
+        // internal paths or other users' reservation details.
         $this->messenger->addError($this->t('Your claim could not be approved right now. It may conflict with an existing reservation.'));
         \Drupal::logger('claim_access_rights')->error('Immediate claim failed: @msg', ['@msg' => $e->getMessage()]);
       }
